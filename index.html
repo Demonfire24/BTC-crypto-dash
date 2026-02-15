@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Colored Fib</title>
+    <title>Bitcoin · 5m + UT Bot + Light Grid</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -484,8 +484,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Colored Fib</h1>
-                <p><span class="badge">LIVE</span> 500 candles · light grid · custom fib colors</p>
+                <h1>Bitcoin · 5m + Light Grid</h1>
+                <p><span class="badge">LIVE</span> 500 candles · soft grey grid · custom fib colors</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -554,7 +554,7 @@
                 <div class="legend-item utbot"><span class="legend-line" style="background:#f97316;"></span> UT Bot Stop</div>
                 <div class="legend-item"><span class="shape-buy">▲</span> Buy</div>
                 <div class="legend-item"><span class="shape-sell">▼</span> Sell</div>
-                <div class="legend-item"><span style="color:#a78bfa;">━</span> Fib (0/1)</div>
+                <div class="legend-item"><span style="color:#a78bfa;">━</span> Fib 0/0.786/1</div>
                 <div class="legend-item"><span style="color:#ef4444;">━</span> 0.618</div>
                 <div class="legend-item"><span style="color:#f97316;">━</span> 0.5</div>
                 <div class="legend-item"><span style="color:#4ade80;">━</span> 0.382/0.236</div>
@@ -688,8 +688,8 @@
                         fontFamily: 'Inter, sans-serif',
                     },
                     grid: {
-                        vertLines: { color: '#2a3249' }, // lighter than before (#1e2638)
-                        horzLines: { color: '#2a3249' },
+                        vertLines: { color: '#5a6075' }, // light grey
+                        horzLines: { color: '#5a6075' }, // light grey
                     },
                     crosshair: {
                         mode: LightweightCharts.CrosshairMode.Normal,
