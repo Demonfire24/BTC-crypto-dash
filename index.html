@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin Real‑Time Dashboard · 5m Candles</title>
+    <title>Bitcoin Real‑Time Dashboard · 5m Candles (200+)</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -339,8 +339,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m candles</h1>
-                <p><span class="badge">LIVE</span> real-time price · 5m chart (10s refresh)</p>
+                <h1>Bitcoin · 5m candles (200+)</h1>
+                <p><span class="badge">LIVE</span> real-time price · 16+ hours history</p>
             </div>
         </div>
 
@@ -362,7 +362,7 @@
         <!-- candlestick chart section -->
         <div class="chart-container">
             <div class="chart-header">
-                <h3>📊 BTC/USDT · 5m candles (last 50)</h3>
+                <h3>📊 BTC/USDT · 5m candles (last 200)</h3>
                 <span class="interval-badge">updates every 10s</span>
             </div>
             <div id="candlestickChart"></div>
@@ -403,15 +403,15 @@
             let fetchInterval = null;
             let isFirstFetch = true;
 
-            // ---------- CHART SETUP (5m candles, fast refresh) ----------
+            // ---------- CHART SETUP (5m candles, 200 history, 10s refresh) ----------
             let chart = null;
             let candlestickSeries = null;
             let chartInterval = null;
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
-            // 5m candles, last 50 candles (covers 250 minutes)
-            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=50';
+            // 5m candles, last 200 candles (covers 1000 minutes ≈ 16.7 hours)
+            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200';
 
             // Initialize Lightweight Chart
             function initChart() {
@@ -497,7 +497,7 @@
                 }
             }
 
-            // ---------- PRICE UPDATE (5s polling, same as before) ----------
+            // ---------- PRICE UPDATE (5s polling) ----------
             function formatPrice(price) {
                 if (price === null || price === undefined) return '—';
                 return parseFloat(price).toLocaleString('en-US', {
