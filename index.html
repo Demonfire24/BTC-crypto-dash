@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + EMA (21,200) · 500 candles</title>
+    <title>Bitcoin · 5m + UT Bot + Live Settings</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -34,6 +34,7 @@
             padding: 2rem 2rem 2.5rem 2rem;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(247, 147, 26, 0.1) inset;
             transition: box-shadow 0.3s ease;
+            position: relative;
         }
 
         .dashboard:hover {
@@ -46,6 +47,7 @@
             align-items: center;
             gap: 0.75rem;
             margin-bottom: 2rem;
+            position: relative;
         }
 
         .btc-icon {
@@ -87,6 +89,101 @@
             color: #bdc6dd;
             letter-spacing: 0.3px;
             border: 1px solid #404a60;
+        }
+
+        .settings-button {
+            margin-left: auto;
+            background: #1f263b;
+            border: 1px solid #3b4668;
+            color: #d1d9f0;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 1.4rem;
+        }
+        .settings-button:hover {
+            background: #2f3a58;
+            border-color: #f7931a;
+            color: #f7931a;
+        }
+
+        /* Settings Panel */
+        .settings-panel {
+            position: absolute;
+            top: 80px;
+            right: 2rem;
+            width: 280px;
+            background: #1a1f30;
+            border: 1px solid #3b4668;
+            border-radius: 2rem;
+            padding: 1.5rem;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 20px 40px -10px black;
+            z-index: 100;
+            transition: opacity 0.2s, visibility 0.2s;
+            opacity: 0;
+            visibility: hidden;
+        }
+        .settings-panel.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        .settings-panel h3 {
+            color: white;
+            font-weight: 500;
+            font-size: 1.1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .settings-panel h3 span {
+            background: #2d354a;
+            padding: 0.2rem 0.8rem;
+            border-radius: 30px;
+            font-size: 0.7rem;
+            color: #bdc6dd;
+        }
+        .setting-item {
+            margin-bottom: 1.2rem;
+        }
+        .setting-item label {
+            display: flex;
+            justify-content: space-between;
+            color: #b7c1dd;
+            font-size: 0.85rem;
+            margin-bottom: 0.3rem;
+        }
+        .setting-item input {
+            width: 100%;
+            background: #0f1322;
+            border: 1px solid #2f3a58;
+            border-radius: 30px;
+            padding: 0.6rem 1rem;
+            color: white;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .setting-item input:focus {
+            border-color: #f7931a;
+        }
+        .setting-item input[type="number"] {
+            -moz-appearance: textfield;
+        }
+        .setting-item input[type="number"]::-webkit-outer-spin-button,
+        .setting-item input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .divider {
+            height: 1px;
+            background: #2a3249;
+            margin: 1.5rem 0;
         }
 
         /* main price card */
@@ -210,20 +307,40 @@
             border: 1px solid #3b4668;
         }
 
-        .ema-legend {
+        .legend-container {
             display: flex;
-            gap: 1.5rem;
+            flex-wrap: wrap;
+            gap: 1.5rem 2rem;
             margin-top: 0.5rem;
             padding: 0 0.5rem;
             font-size: 0.8rem;
         }
-        .ema-21 { color: #3b82f6; display: flex; align-items: center; gap: 4px; }
-        .ema-200 { color: #f97316; display: flex; align-items: center; gap: 4px; }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
         .legend-line {
             width: 20px;
             height: 2px;
-            background: currentColor;
             display: inline-block;
+        }
+        .ema21 { color: #3b82f6; }
+        .ema200 { color: #f97316; }
+        .utbot { color: #f97316; }
+        .utbot .legend-line { background: #f97316; }
+        .legend-shape {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .shape-buy {
+            color: #4ade80;
+            font-size: 1rem;
+        }
+        .shape-sell {
+            color: #f87171;
+            font-size: 1rem;
         }
 
         #candlestickChart {
@@ -351,13 +468,37 @@
 </head>
 <body>
     <div class="dashboard">
-        <!-- header -->
+        <!-- header with settings gear -->
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + EMA (21,200)</h1>
+                <h1>Bitcoin · 5m + UT Bot</h1>
                 <p><span class="badge">LIVE</span> 500 candles · 41h+ history · 10s refresh</p>
             </div>
+            <div class="settings-button" id="settingsToggle">⚙️</div>
+        </div>
+
+        <!-- settings panel (hidden by default) -->
+        <div class="settings-panel" id="settingsPanel">
+            <h3>Indicator Settings <span>tweak & see</span></h3>
+            <div class="setting-item">
+                <label>EMA 21 period <span id="ema21Val">21</span></label>
+                <input type="number" id="ema21Input" min="1" max="500" value="21" step="1">
+            </div>
+            <div class="setting-item">
+                <label>EMA 200 period <span id="ema200Val">200</span></label>
+                <input type="number" id="ema200Input" min="1" max="500" value="200" step="1">
+            </div>
+            <div class="divider"></div>
+            <div class="setting-item">
+                <label>UT Bot Key Value <span id="keyVal">3.0</span></label>
+                <input type="number" id="keyInput" min="0.1" max="10" value="3.0" step="0.1">
+            </div>
+            <div class="setting-item">
+                <label>UT Bot ATR Period <span id="atrPeriodVal">10</span></label>
+                <input type="number" id="atrPeriodInput" min="1" max="100" value="10" step="1">
+            </div>
+            <p style="color:#7b88a8; font-size:0.7rem; margin-top:1rem;">Changes apply instantly</p>
         </div>
 
         <!-- main price area -->
@@ -375,15 +516,18 @@
             </div>
         </div>
 
-        <!-- candlestick chart section with EMA legend -->
+        <!-- candlestick chart section with all indicators legend -->
         <div class="chart-container">
             <div class="chart-header">
                 <h3>📊 BTC/USDT · 5m candles (last 500)</h3>
                 <span class="interval-badge">updates every 10s</span>
             </div>
-            <div class="ema-legend">
-                <div class="ema-21"><span class="legend-line"></span> EMA 21 (blue)</div>
-                <div class="ema-200"><span class="legend-line"></span> EMA 200 (orange)</div>
+            <div class="legend-container">
+                <div class="legend-item ema21"><span class="legend-line" style="background:#3b82f6;"></span> EMA 21</div>
+                <div class="legend-item ema200"><span class="legend-line" style="background:#f97316;"></span> EMA 200</div>
+                <div class="legend-item utbot"><span class="legend-line" style="background:#f97316;"></span> UT Bot Stop</div>
+                <div class="legend-item"><span class="shape-buy">▲</span> Buy</div>
+                <div class="legend-item"><span class="shape-sell">▼</span> Sell</div>
             </div>
             <div id="candlestickChart"></div>
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
@@ -418,24 +562,84 @@
             const loadingEl = document.getElementById('loadingIndicator');
             const chartErrorEl = document.getElementById('chartError');
 
+            // Settings panel elements
+            const settingsToggle = document.getElementById('settingsToggle');
+            const settingsPanel = document.getElementById('settingsPanel');
+            const ema21Input = document.getElementById('ema21Input');
+            const ema200Input = document.getElementById('ema200Input');
+            const keyInput = document.getElementById('keyInput');
+            const atrPeriodInput = document.getElementById('atrPeriodInput');
+            const ema21Val = document.getElementById('ema21Val');
+            const ema200Val = document.getElementById('ema200Val');
+            const keyVal = document.getElementById('keyVal');
+            const atrPeriodVal = document.getElementById('atrPeriodVal');
+
             // State for price
             let previousPrice = null;
             let fetchInterval = null;
             let isFirstFetch = true;
 
-            // ---------- CHART SETUP (5m candles, 500 history, 10s refresh) ----------
+            // Chart-related variables
             let chart = null;
             let candlestickSeries = null;
             let ema21Series = null;
             let ema200Series = null;
+            let utBotLineSeries = null;
             let chartInterval = null;
+
+            // Store latest candle data for recalc on settings change
+            let lastCandleData = null;
+
+            // Indicator parameters (mutable)
+            let settings = {
+                ema21Period: 21,
+                ema200Period: 200,
+                utBotKey: 3.0,
+                utBotAtrPeriod: 10
+            };
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
-            // 5m candles, last 500 candles (covers 2500 minutes ≈ 41.6 hours)
             const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=500';
 
-            // Initialize Lightweight Chart
+            // ---------- UI: toggle settings panel ----------
+            settingsToggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                settingsPanel.classList.toggle('visible');
+            });
+            // Close panel when clicking outside (optional)
+            document.addEventListener('click', (e) => {
+                if (!settingsPanel.contains(e.target) && !settingsToggle.contains(e.target)) {
+                    settingsPanel.classList.remove('visible');
+                }
+            });
+
+            // Update displayed values and trigger recalc
+            function updateSettingsFromInputs() {
+                // Update settings object
+                settings.ema21Period = parseInt(ema21Input.value, 10) || 21;
+                settings.ema200Period = parseInt(ema200Input.value, 10) || 200;
+                settings.utBotKey = parseFloat(keyInput.value) || 3.0;
+                settings.utBotAtrPeriod = parseInt(atrPeriodInput.value, 10) || 10;
+
+                // Update labels
+                ema21Val.textContent = settings.ema21Period;
+                ema200Val.textContent = settings.ema200Period;
+                keyVal.textContent = settings.utBotKey.toFixed(1);
+                atrPeriodVal.textContent = settings.utBotAtrPeriod;
+
+                // Recalculate indicators if we have data
+                if (lastCandleData) {
+                    recalcIndicatorsFromData(lastCandleData);
+                }
+            }
+
+            // Attach event listeners to inputs
+            [ema21Input, ema200Input, keyInput, atrPeriodInput].forEach(input => {
+                input.addEventListener('input', updateSettingsFromInputs);
+            });
+
+            // ---------- CHART SETUP ----------
             function initChart() {
                 const chartContainer = document.getElementById('candlestickChart');
                 chartContainer.innerHTML = ''; // clear previous
@@ -494,7 +698,13 @@
                     title: 'EMA 200',
                 });
 
-                // handle resize
+                utBotLineSeries = chart.addLineSeries({
+                    color: '#f97316',
+                    lineWidth: 2,
+                    priceLineVisible: false,
+                    title: 'UT Bot Stop',
+                });
+
                 window.addEventListener('resize', () => {
                     chart.applyOptions({ width: chartContainer.clientWidth });
                 });
@@ -503,7 +713,7 @@
             // Convert Binance kline to lightweight-charts format
             function formatKlineData(klines) {
                 return klines.map(k => ({
-                    time: Math.floor(k[0] / 1000),   // ms -> seconds
+                    time: Math.floor(k[0] / 1000),
                     open: parseFloat(k[1]),
                     high: parseFloat(k[2]),
                     low: parseFloat(k[3]),
@@ -511,47 +721,103 @@
                 }));
             }
 
-            // Update EMAs based on current candle data
-            function updateEMAs(candleData) {
-                if (!candleData || candleData.length < 200) return; // need at least 200 for 200 EMA
+            // ---------- INDICATOR CALCULATIONS (using current settings) ----------
 
-                const closePrices = candleData.map(d => d.close);
-                const times = candleData.map(d => d.time);
-
-                // Calculate 21 EMA
-                const ema21Values = [];
-                const period21 = 21;
-                const multiplier21 = 2 / (period21 + 1);
-                // SMA for first 21
-                let sum21 = 0;
-                for (let i = 0; i < period21; i++) sum21 += closePrices[i];
-                let prevEma21 = sum21 / period21;
-                ema21Values.push({ time: times[period21-1], value: prevEma21 });
-                for (let i = period21; i < closePrices.length; i++) {
-                    const ema = (closePrices[i] * multiplier21) + (prevEma21 * (1 - multiplier21));
-                    ema21Values.push({ time: times[i], value: ema });
-                    prevEma21 = ema;
+            // ATR (Wilder's smoothing)
+            function computeATR(high, low, close, period) {
+                const tr = [];
+                const atr = new Array(high.length).fill(NaN);
+                for (let i = 0; i < high.length; i++) {
+                    if (i === 0) tr[i] = high[i] - low[i];
+                    else tr[i] = Math.max(high[i] - low[i], Math.abs(high[i] - close[i-1]), Math.abs(low[i] - close[i-1]));
                 }
-
-                // Calculate 200 EMA
-                const ema200Values = [];
-                const period200 = 200;
-                const multiplier200 = 2 / (period200 + 1);
-                let sum200 = 0;
-                for (let i = 0; i < period200; i++) sum200 += closePrices[i];
-                let prevEma200 = sum200 / period200;
-                ema200Values.push({ time: times[period200-1], value: prevEma200 });
-                for (let i = period200; i < closePrices.length; i++) {
-                    const ema = (closePrices[i] * multiplier200) + (prevEma200 * (1 - multiplier200));
-                    ema200Values.push({ time: times[i], value: ema });
-                    prevEma200 = ema;
+                if (high.length >= period) {
+                    let sum = 0;
+                    for (let i = 0; i < period; i++) sum += tr[i];
+                    atr[period-1] = sum / period;
+                    for (let i = period; i < high.length; i++) {
+                        atr[i] = (atr[i-1] * (period-1) + tr[i]) / period;
+                    }
                 }
-
-                ema21Series.setData(ema21Values);
-                ema200Series.setData(ema200Values);
+                return atr;
             }
 
-            // Fetch candlestick data and update chart (called every 10 seconds)
+            // UT Bot trailing stop and signals
+            function computeUTBot(candleData, key, atrPeriod) {
+                const closes = candleData.map(d => d.close);
+                const highs = candleData.map(d => d.high);
+                const lows = candleData.map(d => d.low);
+                const times = candleData.map(d => d.time);
+                const len = closes.length;
+
+                const atr = computeATR(highs, lows, closes, atrPeriod);
+                const stop = new Array(len).fill(null);
+                const startIdx = atrPeriod - 1;
+                if (len <= startIdx) return { stopLine: [], markers: [] };
+
+                stop[startIdx] = closes[startIdx] - key * atr[startIdx];
+                for (let i = startIdx + 1; i < len; i++) {
+                    if (closes[i] > stop[i-1]) {
+                        stop[i] = Math.max(stop[i-1], closes[i] - key * atr[i]);
+                    } else {
+                        stop[i] = Math.min(stop[i-1], closes[i] + key * atr[i]);
+                    }
+                }
+
+                const stopLine = [];
+                for (let i = startIdx; i < len; i++) {
+                    stopLine.push({ time: times[i], value: stop[i] });
+                }
+
+                const markers = [];
+                for (let i = startIdx + 1; i < len; i++) {
+                    if (closes[i] > stop[i] && closes[i-1] <= stop[i-1]) {
+                        markers.push({ time: times[i], position: 'belowBar', color: '#4ade80', shape: 'triangleUp', text: 'B' });
+                    }
+                    if (closes[i] < stop[i] && closes[i-1] >= stop[i-1]) {
+                        markers.push({ time: times[i], position: 'aboveBar', color: '#f87171', shape: 'triangleDown', text: 'S' });
+                    }
+                }
+                return { stopLine, markers };
+            }
+
+            // EMA calculation (generic)
+            function computeEMA(closes, times, period) {
+                if (closes.length < period) return [];
+                const multiplier = 2 / (period + 1);
+                const values = [];
+                let sum = 0;
+                for (let i = 0; i < period; i++) sum += closes[i];
+                let prevEma = sum / period;
+                values.push({ time: times[period-1], value: prevEma });
+                for (let i = period; i < closes.length; i++) {
+                    const ema = (closes[i] * multiplier) + (prevEma * (1 - multiplier));
+                    values.push({ time: times[i], value: ema });
+                    prevEma = ema;
+                }
+                return values;
+            }
+
+            // Recalculate all indicators from given candle data using current settings
+            function recalcIndicatorsFromData(candleData) {
+                if (!candleData || candleData.length === 0) return;
+
+                const closes = candleData.map(d => d.close);
+                const times = candleData.map(d => d.time);
+
+                // EMAs
+                const ema21data = computeEMA(closes, times, settings.ema21Period);
+                const ema200data = computeEMA(closes, times, settings.ema200Period);
+                ema21Series.setData(ema21data);
+                ema200Series.setData(ema200data);
+
+                // UT Bot
+                const { stopLine, markers } = computeUTBot(candleData, settings.utBotKey, settings.utBotAtrPeriod);
+                utBotLineSeries.setData(stopLine);
+                candlestickSeries.setMarkers(markers);
+            }
+
+            // ---------- FETCH AND UPDATE ----------
             async function fetchAndUpdateCandles() {
                 if (!candlestickSeries) return;
 
@@ -561,8 +827,14 @@
                     const data = await response.json();
                     const candleData = formatKlineData(data);
                     
+                    // Store for later recalc
+                    lastCandleData = candleData;
+
+                    // Update candlesticks
                     candlestickSeries.setData(candleData);
-                    updateEMAs(candleData);
+                    
+                    // Update all indicators using current settings
+                    recalcIndicatorsFromData(candleData);
                     
                     chart.timeScale().fitContent();
                     chartErrorEl.classList.add('hidden');
@@ -573,7 +845,7 @@
                 }
             }
 
-            // ---------- PRICE UPDATE (5s polling) ----------
+            // ---------- PRICE UPDATE (unchanged) ----------
             function formatPrice(price) {
                 if (price === null || price === undefined) return '—';
                 return parseFloat(price).toLocaleString('en-US', {
@@ -656,7 +928,7 @@
             function startRealTimeUpdates() {
                 fetchBitcoinPrice();
                 if (fetchInterval) clearInterval(fetchInterval);
-                fetchInterval = setInterval(fetchBitcoinPrice, 5000); // price every 5s
+                fetchInterval = setInterval(fetchBitcoinPrice, 5000);
             }
 
             function stopUpdates() {
@@ -664,7 +936,7 @@
                 if (chartInterval) clearInterval(chartInterval);
             }
 
-            // ---------- INIT ON LOAD ----------
+            // ---------- INIT ----------
             window.addEventListener('load', () => {
                 initChart();
                 fetchAndUpdateCandles(); // immediate fetch
