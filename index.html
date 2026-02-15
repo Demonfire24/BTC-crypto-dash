@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + No Grid</title>
+    <title>Bitcoin · 5m + UT Bot + Sticky Fib</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -484,8 +484,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + No Grid</h1>
-                <p><span class="badge">LIVE</span> 500 candles · clean chart · custom fib colors</p>
+                <h1>Bitcoin · 5m + Sticky Fib</h1>
+                <p><span class="badge">LIVE</span> 500 candles · dynamic endpoint · sticks on retrace</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -522,7 +522,7 @@
                     <input type="checkbox" id="showFib" checked>
                     <label for="showFib">Draw Fibonacci on signal</label>
                 </div>
-                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">Buy: last bearish low → signal close<br>Sell: signal close → last bullish high</p>
+                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">Buy: last bearish low → highest high<br>Sell: last bullish high → lowest low</p>
             </div>
             <p style="color:#7b88a8; font-size:0.7rem; margin-top:1rem;">Changes apply instantly</p>
         </div>
@@ -619,6 +619,9 @@
             let isFirstChartLoad = true;
             let fibSeriesArray = []; // store current Fib line series
 
+            // Active Fibonacci tracking (sticky logic)
+            let activeFib = null; // { type: 'buy'/'sell', startPrice, signalTime, extreme, stuck }
+
             // Settings
             let settings = {
                 ema21Period: 21,
@@ -688,8 +691,8 @@
                         fontFamily: 'Inter, sans-serif',
                     },
                     grid: {
-                        vertLines: { color: 'transparent' }, // no grid
-                        horzLines: { color: 'transparent' }, // no grid
+                        vertLines: { color: 'transparent' },
+                        horzLines: { color: 'transparent' },
                     },
                     crosshair: {
                         mode: LightweightCharts.CrosshairMode.Normal,
@@ -759,48 +762,15 @@
                 return '#a78bfa'; // default purple for 0, 0.786, 1
             }
 
-            // Find the most recent opposite candle index
-            function findOppositeCandleIndex(candleData, startIdx, isBuy) {
-                // isBuy = true -> we need a bearish candle (close < open)
-                // isBuy = false -> we need a bullish candle (close > open)
-                for (let i = startIdx - 1; i >= 0; i--) {
-                    const candle = candleData[i];
-                    const isBearish = candle.close < candle.open;
-                    const isBullish = candle.close > candle.open;
-                    if (isBuy && isBearish) return i;
-                    if (!isBuy && isBullish) return i;
-                }
-                return -1; // not found
-            }
-
-            // Draw Fibonacci levels for a given signal
-            function drawFibForSignal(candleData, signalIdx, isBuy) {
+            // Draw Fibonacci levels given start and end prices and signal time
+            function drawFibLines(startPrice, endPrice, signalTime, lastTime) {
                 if (!settings.showFib) return;
-                removeFibSeries(); // only keep the latest
-
-                const signalCandle = candleData[signalIdx];
-                const oppositeIdx = findOppositeCandleIndex(candleData, signalIdx, isBuy);
-                if (oppositeIdx === -1) return; // no opposite candle found
-
-                const oppositeCandle = candleData[oppositeIdx];
-                let startPrice, endPrice;
-                if (isBuy) {
-                    // Buy: from low of bearish candle to close of signal candle
-                    startPrice = oppositeCandle.low;
-                    endPrice = signalCandle.close;
-                } else {
-                    // Sell: from close of signal candle to high of bullish candle
-                    startPrice = signalCandle.close;
-                    endPrice = oppositeCandle.high;
-                }
+                removeFibSeries();
 
                 // Ensure start < end for proper fib levels
                 if (startPrice > endPrice) {
-                    [startPrice, endPrice] = [endPrice, startPrice]; // swap if needed
+                    [startPrice, endPrice] = [endPrice, startPrice];
                 }
-
-                const lastTime = candleData[candleData.length-1].time;
-                const signalTime = signalCandle.time;
 
                 fibLevels.forEach((level) => {
                     const price = startPrice + level * (endPrice - startPrice);
@@ -819,6 +789,91 @@
                     ]);
                     fibSeriesArray.push(series);
                 });
+            }
+
+            // Find the most recent opposite candle index
+            function findOppositeCandleIndex(candleData, startIdx, isBuy) {
+                // isBuy = true -> we need a bearish candle (close < open)
+                // isBuy = false -> we need a bullish candle (close > open)
+                for (let i = startIdx - 1; i >= 0; i--) {
+                    const candle = candleData[i];
+                    const isBearish = candle.close < candle.open;
+                    const isBullish = candle.close > candle.open;
+                    if (isBuy && isBearish) return i;
+                    if (!isBuy && isBullish) return i;
+                }
+                return -1;
+            }
+
+            // Set new active fib from a marker
+            function setNewFibFromMarker(candleData, marker, signalIdx) {
+                const isBuy = marker.shape === 'triangleUp';
+                const signalCandle = candleData[signalIdx];
+                const oppositeIdx = findOppositeCandleIndex(candleData, signalIdx, isBuy);
+                if (oppositeIdx === -1) return;
+
+                const oppositeCandle = candleData[oppositeIdx];
+                let startPrice = isBuy ? oppositeCandle.low : oppositeCandle.high;
+                // initial extreme: for buy, start at signal candle's high; for sell, start at signal candle's low
+                let initialExtreme = isBuy ? signalCandle.high : signalCandle.low;
+
+                activeFib = {
+                    type: isBuy ? 'buy' : 'sell',
+                    startPrice: startPrice,
+                    signalTime: signalCandle.time,
+                    extreme: initialExtreme,
+                    stuck: false
+                };
+
+                // Draw initial fib
+                const lastTime = candleData[candleData.length-1].time;
+                drawFibLines(startPrice, initialExtreme, signalCandle.time, lastTime);
+            }
+
+            // Update active fib with new data (called after each fetch)
+            function updateActiveFib(candleData) {
+                if (!activeFib || !settings.showFib) return;
+                if (activeFib.stuck) return; // already stuck, no updates
+
+                const { type, startPrice, signalTime, extreme } = activeFib;
+                // find index of signalTime
+                const startIdx = candleData.findIndex(d => d.time === signalTime);
+                if (startIdx === -1) return; // signal candle no longer in data? shouldn't happen
+
+                // consider candles from startIdx+1 onward (excluding signal candle itself)
+                let newExtreme = extreme;
+                if (type === 'buy') {
+                    // look for higher high
+                    for (let i = startIdx + 1; i < candleData.length; i++) {
+                        if (candleData[i].high > newExtreme) {
+                            newExtreme = candleData[i].high;
+                        }
+                    }
+                    // check if price has retraced (current close < newExtreme)
+                    const latestClose = candleData[candleData.length-1].close;
+                    if (latestClose < newExtreme) {
+                        // retrace detected, stick at current extreme
+                        activeFib.stuck = true;
+                    }
+                } else { // sell
+                    for (let i = startIdx + 1; i < candleData.length; i++) {
+                        if (candleData[i].low < newExtreme) {
+                            newExtreme = candleData[i].low;
+                        }
+                    }
+                    const latestClose = candleData[candleData.length-1].close;
+                    if (latestClose > newExtreme) {
+                        activeFib.stuck = true;
+                    }
+                }
+
+                if (newExtreme !== extreme) {
+                    activeFib.extreme = newExtreme;
+                }
+
+                // redraw fib with updated extreme (even if stuck, we redraw to reflect stickiness)
+                const lastTime = candleData[candleData.length-1].time;
+                drawFibLines(startPrice, activeFib.extreme, signalTime, lastTime);
             }
 
             // Format kline data
@@ -925,16 +980,17 @@
                 utBotLineSeries.setData(stopLine);
                 candlestickSeries.setMarkers(markers);
 
-                // If a new marker appears, draw Fib using opposite candle logic
+                // If a new marker appears, set new active fib (replaces previous)
                 if (markers.length > 0) {
-                    // Get the latest marker
                     const lastMarker = markers[markers.length-1];
                     const signalTime = lastMarker.time;
                     const signalIdx = candleData.findIndex(d => d.time === signalTime);
-                    if (signalIdx > 0) { // need at least one previous candle to search
-                        const isBuy = lastMarker.shape === 'triangleUp';
-                        drawFibForSignal(candleData, signalIdx, isBuy);
+                    if (signalIdx > 0) {
+                        setNewFibFromMarker(candleData, lastMarker, signalIdx);
                     }
+                } else if (activeFib) {
+                    // No new markers, update existing active fib
+                    updateActiveFib(candleData);
                 }
             }
 
