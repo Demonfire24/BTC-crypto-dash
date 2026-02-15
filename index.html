@@ -3,135 +3,514 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BTC 5m Pro Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.0/dist/chartjs-chart-financial.umd.min.js"></script>
+    <title>Bitcoin Real‑Time Dashboard</title>
     <style>
-        body { background: #0f172a; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
-        .card { background: #1e293b; border-radius: 12px; width: 100%; max-width: 1000px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 15px; }
-        #price { font-size: 2.2rem; font-weight: 800; color: #f59e0b; font-variant-numeric: tabular-nums; }
-        .chart-container { height: 450px; position: relative; }
-        #debug { background: #000; color: #22c55e; font-family: monospace; font-size: 11px; padding: 10px; margin-top: 15px; width: 100%; max-width: 1000px; border-radius: 8px; max-height: 100px; overflow-y: auto; box-sizing: border-box; }
-        .up { color: #22c55e !important; }
-        .down { color: #ef4444 !important; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            min-height: 100vh;
+            background: linear-gradient(145deg, #0b0e1a 0%, #1a1f2f 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+
+        .dashboard {
+            width: 100%;
+            max-width: 560px;
+            background: rgba(18, 22, 36, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(71, 125, 241, 0.15);
+            border-radius: 3rem;
+            padding: 2rem 2rem 2.5rem 2rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(247, 147, 26, 0.1) inset;
+            transition: box-shadow 0.3s ease;
+        }
+
+        .dashboard:hover {
+            box-shadow: 0 30px 60px -12px rgba(247, 147, 26, 0.25), 0 0 0 1px rgba(247, 147, 26, 0.3) inset;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 2rem;
+        }
+
+        .btc-icon {
+            background: #f7931a;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.8rem;
+            color: #0b0e1a;
+            box-shadow: 0 8px 18px rgba(247, 147, 26, 0.3);
+        }
+
+        .title h1 {
+            color: white;
+            font-weight: 500;
+            font-size: 1.6rem;
+            letter-spacing: -0.5px;
+        }
+
+        .title p {
+            color: #9aa3b8;
+            font-size: 0.9rem;
+            margin-top: 2px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .badge {
+            background: #2d354a;
+            padding: 0.2rem 0.8rem;
+            border-radius: 30px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            color: #bdc6dd;
+            letter-spacing: 0.3px;
+            border: 1px solid #404a60;
+        }
+
+        /* main price card */
+        .price-card {
+            background: rgba(10, 14, 23, 0.7);
+            border-radius: 2.5rem;
+            padding: 2rem 2rem 1.8rem 2rem;
+            margin-bottom: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.6);
+        }
+
+        .price-label {
+            color: #a3adc9;
+            font-size: 0.95rem;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .price-label span {
+            background: #f7931a20;
+            padding: 0.2rem 0.8rem;
+            border-radius: 30px;
+            color: #f9b45b;
+            font-size: 0.7rem;
+            border: 1px solid #f7931a40;
+        }
+
+        .main-price {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.8rem 0.5rem;
+        }
+
+        .price-value {
+            font-size: 4rem;
+            font-weight: 600;
+            color: white;
+            letter-spacing: -2px;
+            line-height: 1;
+            text-shadow: 0 4px 12px rgba(247, 147, 26, 0.3);
+        }
+
+        .price-value small {
+            font-size: 1.8rem;
+            font-weight: 400;
+            color: #7b88a8;
+            letter-spacing: normal;
+            margin-left: 0.3rem;
+        }
+
+        .change-indicator {
+            background: #1f2538;
+            padding: 0.5rem 1.2rem;
+            border-radius: 60px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border: 1px solid #2e3750;
+            font-weight: 500;
+            font-size: 1.2rem;
+        }
+
+        .change-up {
+            color: #4ade80;
+        }
+
+        .change-down {
+            color: #f87171;
+        }
+
+        .change-neutral {
+            color: #9ca3af;
+        }
+
+        .change-percent {
+            background: #2a3147;
+            padding: 0.2rem 0.7rem;
+            border-radius: 40px;
+            font-size: 1rem;
+            color: #e2e8f0;
+        }
+
+        /* footer grid (meta + status) */
+        .dashboard-footer {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem 1.5rem;
+        }
+
+        .last-updated {
+            background: #151b2b;
+            padding: 0.9rem 1.6rem;
+            border-radius: 3rem;
+            border: 1px solid #2a3249;
+            flex: 1 1 auto;
+            min-width: 180px;
+        }
+
+        .last-updated .label {
+            color: #818cae;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            margin-bottom: 0.3rem;
+        }
+
+        .last-updated .time {
+            color: #d9e0f0;
+            font-size: 1.2rem;
+            font-weight: 500;
+            letter-spacing: -0.2px;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .time.live-dot::before {
+            content: "";
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #4ade80;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #4ade80;
+            margin-right: 6px;
+            animation: pulse 1.8s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.1); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .source-badge {
+            background: #1f263b;
+            border-radius: 3rem;
+            padding: 0.9rem 1.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            border: 1px solid #333d5a;
+            color: #b7c1dd;
+            font-weight: 400;
+            font-size: 0.9rem;
+        }
+
+        .source-badge i {
+            color: #fcd34d;
+            font-style: normal;
+            background: #2f3a58;
+            padding: 0.2rem 0.6rem;
+            border-radius: 30px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .error-message {
+            color: #fca5a5;
+            background: #451a1a;
+            border-radius: 2rem;
+            padding: 0.6rem 1.2rem;
+            font-size: 0.9rem;
+            border: 1px solid #991b1b;
+            display: inline-block;
+            margin-top: 1rem;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.6rem;
+            color: #9aa6c7;
+            font-size: 1rem;
+            padding: 0.8rem 0;
+        }
+
+        .loading .spinner {
+            width: 20px;
+            height: 20px;
+            border: 3px solid #2f3b5c;
+            border-top: 3px solid #f7931a;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none !important;
+        }
     </style>
 </head>
 <body>
-
-    <div class="card">
+    <div class="dashboard">
+        <!-- header -->
         <div class="header">
-            <div>
-                <h2 style="margin: 0; font-size: 1.2rem;">Bitcoin / USDT</h2>
-                <div style="color: #64748b; font-size: 0.8rem;">5-Minute Candlesticks</div>
+            <div class="btc-icon">₿</div>
+            <div class="title">
+                <h1>Bitcoin tracker</h1>
+                <p><span class="badge">LIVE</span> real-time price · USD</p>
             </div>
-            <div id="price">Syncing...</div>
         </div>
-        <div class="chart-container">
-            <canvas id="chart"></canvas>
+
+        <!-- main price area -->
+        <div class="price-card">
+            <div class="price-label">
+                BTC/USD
+                <span>▲ Binance</span>
+            </div>
+            <div class="main-price">
+                <div class="price-value" id="btcPrice">— <small>USD</small></div>
+                <div class="change-indicator" id="changeContainer">
+                    <span id="changeArrow">⚫</span>
+                    <span id="changePercent">0.00%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- footer: last updated + source -->
+        <div class="dashboard-footer">
+            <div class="last-updated">
+                <div class="label">Last update</div>
+                <div class="time live-dot" id="updateTime">—</div>
+            </div>
+            <div class="source-badge">
+                <span>📡</span> Binance API <i>5s polling</i>
+            </div>
+        </div>
+
+        <!-- hidden loading / error placeholder (shown dynamically) -->
+        <div id="errorContainer" class="error-message hidden"></div>
+        <div id="loadingIndicator" class="loading hidden">
+            <div class="spinner"></div> fetching latest price...
         </div>
     </div>
 
-    <div id="debug">> System initializing...</div>
-
     <script>
-        // Log helper
-        function log(msg) {
-            const d = document.getElementById('debug');
-            d.innerHTML += `<br>> ${msg}`;
-            d.scrollTop = d.scrollHeight;
-        }
+        (function() {
+            // DOM elements
+            const priceEl = document.getElementById('btcPrice');
+            const updateTimeEl = document.getElementById('updateTime');
+            const changeArrowEl = document.getElementById('changeArrow');
+            const changePercentEl = document.getElementById('changePercent');
+            const changeContainer = document.getElementById('changeContainer');
+            const errorContainer = document.getElementById('errorContainer');
+            const loadingEl = document.getElementById('loadingIndicator');
 
-        // Register Financial Plugin
-        Chart.register(ChartFinancialControllers.CandlestickController, ChartFinancialControllers.CandlestickElement);
+            // State
+            let previousPrice = null;
+            let currentPrice = null;
+            let fetchInterval = null;
+            let isFirstFetch = true;
 
-        const ctx = document.getElementById('chart').getContext('2d');
-        const priceDisplay = document.getElementById('price');
+            // Binance API endpoint (BTCUSDT price)
+            const API_URL = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
 
-        // Setup Chart
-        const chart = new Chart(ctx, {
-            type: 'candlestick',
-            data: {
-                datasets: [{
-                    label: 'BTC/USDT',
-                    data: [],
-                    color: { up: '#22c55e', down: '#ef4444', unchanged: '#94a3b8' },
-                    wickColor: { up: '#22c55e', down: '#ef4444', unchanged: '#94a3b8' }
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { type: 'timeseries', grid: { color: '#334155' } },
-                    y: { grid: { color: '#334155' }, position: 'right' }
-                },
-                plugins: { legend: { display: false } }
+            // Helper: format number with thousands separators and 2 decimals
+            function formatPrice(price) {
+                if (price === null || price === undefined) return '—';
+                return parseFloat(price).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                });
             }
-        });
 
-        // 1. Fetch History (Pre-fill)
-        async function loadHistory() {
-            log("Fetching 5m history from Binance API...");
-            try {
-                const res = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=60');
-                if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
-                const raw = await res.json();
-                
-                const formatted = raw.map(d => ({
-                    x: d[0], o: parseFloat(d[1]), h: parseFloat(d[2]), l: parseFloat(d[3]), c: parseFloat(d[4])
-                }));
-                
-                chart.data.datasets[0].data = formatted;
-                chart.update();
-                log(`Loaded ${formatted.length} candles. Connecting to live stream...`);
-                startLiveUpdates();
-            } catch (err) {
-                log(`Error loading history: ${err.message}`);
-                log("Retrying in 3 seconds...");
-                setTimeout(loadHistory, 3000);
-            }
-        }
-
-        // 2. WebSocket for Real-time
-        function startLiveUpdates() {
-            const ws = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@kline_5m");
-
-            ws.onopen = () => log("WebSocket Connected.");
-
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                const k = data.k; // Candle object
-                
-                const newCandle = {
-                    x: k.t, o: parseFloat(k.o), h: parseFloat(k.h), l: parseFloat(k.l), c: parseFloat(k.c)
-                };
-
-                const dataset = chart.data.datasets[0].data;
-                const lastIdx = dataset.length - 1;
-
-                // Update current candle or push new one
-                if (dataset.length > 0 && dataset[lastIdx].x === newCandle.x) {
-                    dataset[lastIdx] = newCandle;
-                } else {
-                    dataset.push(newCandle);
-                    if (dataset.length > 100) dataset.shift();
+            // Helper: update UI with new price data
+            function updateDashboard(priceData) {
+                // priceData is { symbol, price } from Binance
+                const newPrice = parseFloat(priceData.price);
+                if (isNaN(newPrice)) {
+                    throw new Error('Invalid price from API');
                 }
 
-                // UI Updates
-                priceDisplay.innerText = `$${newCandle.c.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
-                priceDisplay.className = newCandle.c >= newCandle.o ? 'up' : 'down';
-                chart.update('none');
-            };
+                // Store current price
+                currentPrice = newPrice;
 
-            ws.onerror = (e) => log("WebSocket Error. Check your connection.");
-            ws.onclose = () => log("WebSocket Closed. Refreshing...");
-        }
+                // Update price display
+                priceEl.innerHTML = `${formatPrice(newPrice)} <small>USD</small>`;
 
-        // Initialize
-        loadHistory();
+                // Update timestamp
+                const now = new Date();
+                updateTimeEl.textContent = now.toLocaleTimeString('en-US', { 
+                    hour: '2-digit', 
+                    minute: '2-digit', 
+                    second: '2-digit',
+                    hour12: false 
+                });
+
+                // Calculate change if we have previous price
+                if (previousPrice !== null) {
+                    const diff = newPrice - previousPrice;
+                    const percent = (diff / previousPrice) * 100;
+                    const absPercent = percent.toFixed(2);
+                    const sign = diff > 0 ? '+' : (diff < 0 ? '' : '±'); // diff negative shows minus sign automatically
+
+                    // Set arrow and color
+                    if (diff > 0) {
+                        changeArrowEl.innerHTML = '▲';
+                        changeArrowEl.className = 'change-up';
+                        changePercentEl.className = 'change-percent change-up';
+                    } else if (diff < 0) {
+                        changeArrowEl.innerHTML = '▼';
+                        changeArrowEl.className = 'change-down';
+                        changePercentEl.className = 'change-percent change-down';
+                    } else {
+                        changeArrowEl.innerHTML = '•';
+                        changeArrowEl.className = 'change-neutral';
+                        changePercentEl.className = 'change-percent change-neutral';
+                    }
+
+                    changePercentEl.textContent = (diff === 0 ? '0.00' : (sign + absPercent)) + '%';
+                } else {
+                    // First fetch – no change to show
+                    changeArrowEl.innerHTML = '⚫';
+                    changeArrowEl.className = 'change-neutral';
+                    changePercentEl.textContent = '0.00%';
+                    changePercentEl.className = 'change-percent change-neutral';
+                }
+
+                // Update previous price for next comparison
+                previousPrice = newPrice;
+
+                // Hide any loading/error indicators
+                loadingEl.classList.add('hidden');
+                errorContainer.classList.add('hidden');
+            }
+
+            // Show error message
+            function showError(message) {
+                errorContainer.textContent = `⚠️ ${message}`;
+                errorContainer.classList.remove('hidden');
+                loadingEl.classList.add('hidden');
+                // Keep previous price visible if exists
+            }
+
+            // Show loading (only on first fetch or manual)
+            function showLoading() {
+                if (isFirstFetch) {
+                    loadingEl.classList.remove('hidden');
+                }
+            }
+
+            // Main fetch function
+            async function fetchBitcoinPrice() {
+                // If it's the first load, show loading
+                if (isFirstFetch) {
+                    showLoading();
+                }
+
+                try {
+                    const response = await fetch(API_URL);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status} — ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+
+                    // Binance returns { symbol: "BTCUSDT", price: "12345.67" }
+                    if (!data || !data.price) {
+                        throw new Error('Unexpected API response format');
+                    }
+
+                    // Success: update dashboard
+                    updateDashboard(data);
+                    
+                    // After first success, set flag false
+                    if (isFirstFetch) isFirstFetch = false;
+
+                } catch (err) {
+                    console.warn('Fetch error:', err);
+                    // Show error but don't wipe price if we already have one
+                    if (previousPrice === null) {
+                        // No price ever loaded – show fallback in price field?
+                        priceEl.innerHTML = '— <small>USD</small>';
+                    }
+                    showError('Failed to load price. Retrying…');
+                    
+                    // Hide loading if it's still visible
+                    loadingEl.classList.add('hidden');
+                }
+            }
+
+            // Initial fetch and set interval
+            function startRealTimeUpdates() {
+                // Fetch immediately
+                fetchBitcoinPrice();
+
+                // Then set interval every 5 seconds
+                if (fetchInterval) clearInterval(fetchInterval);
+                fetchInterval = setInterval(fetchBitcoinPrice, 5000); // 5000ms = 5 seconds
+            }
+
+            // Optional: stop interval if needed (not used here, but good practice)
+            function stopUpdates() {
+                if (fetchInterval) {
+                    clearInterval(fetchInterval);
+                    fetchInterval = null;
+                }
+            }
+
+            // Start everything when DOM ready
+            window.addEventListener('load', () => {
+                startRealTimeUpdates();
+            });
+
+            // (Optional) clean up on page unload – not strictly necessary but prevents memory leaks
+            window.addEventListener('beforeunload', () => {
+                stopUpdates();
+            });
+
+        })();
     </script>
 </body>
 </html>
