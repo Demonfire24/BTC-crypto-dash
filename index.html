@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin Real‑Time Dashboard</title>
+    <title>Bitcoin Real‑Time Dashboard + Candlestick Chart</title>
+    <!-- Lightweight Charts (TradingView) -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * {
             margin: 0;
@@ -23,7 +25,7 @@
 
         .dashboard {
             width: 100%;
-            max-width: 560px;
+            max-width: 1000px;     /* wider to accommodate chart */
             background: rgba(18, 22, 36, 0.75);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
@@ -175,6 +177,46 @@
             color: #e2e8f0;
         }
 
+        /* Chart container */
+        .chart-container {
+            margin: 2rem 0 1.8rem 0;
+            background: rgba(8, 12, 20, 0.6);
+            border-radius: 2rem;
+            padding: 1.5rem 1rem 1rem 1rem;
+            border: 1px solid #2a3249;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding: 0 0.5rem;
+        }
+
+        .chart-header h3 {
+            color: #d1d9f0;
+            font-weight: 400;
+            font-size: 1.1rem;
+            letter-spacing: -0.2px;
+        }
+
+        .chart-header .interval-badge {
+            background: #1f2a3f;
+            color: #b7c4e0;
+            padding: 0.3rem 1rem;
+            border-radius: 30px;
+            font-size: 0.8rem;
+            border: 1px solid #3b4668;
+        }
+
+        #candlestickChart {
+            width: 100%;
+            height: 300px;
+            border-radius: 1.2rem;
+            overflow: hidden;
+        }
+
         /* footer grid (meta + status) */
         .dashboard-footer {
             display: flex;
@@ -297,8 +339,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin tracker</h1>
-                <p><span class="badge">LIVE</span> real-time price · USD</p>
+                <h1>Bitcoin tracker + candles</h1>
+                <p><span class="badge">LIVE</span> real-time price · 1m chart</p>
             </div>
         </div>
 
@@ -317,14 +359,24 @@
             </div>
         </div>
 
+        <!-- candlestick chart section -->
+        <div class="chart-container">
+            <div class="chart-header">
+                <h3>📊 BTC/USDT · 1m candles</h3>
+                <span class="interval-badge">30 minutes history</span>
+            </div>
+            <div id="candlestickChart"></div>
+            <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
+        </div>
+
         <!-- footer: last updated + source -->
         <div class="dashboard-footer">
             <div class="last-updated">
-                <div class="label">Last update</div>
+                <div class="label">Last price update</div>
                 <div class="time live-dot" id="updateTime">—</div>
             </div>
             <div class="source-badge">
-                <span>📡</span> Binance API <i>5s polling</i>
+                <span>📡</span> Binance API <i>5s / 60s polling</i>
             </div>
         </div>
 
@@ -337,7 +389,7 @@
 
     <script>
         (function() {
-            // DOM elements
+            // DOM elements for price
             const priceEl = document.getElementById('btcPrice');
             const updateTimeEl = document.getElementById('updateTime');
             const changeArrowEl = document.getElementById('changeArrow');
@@ -345,17 +397,109 @@
             const changeContainer = document.getElementById('changeContainer');
             const errorContainer = document.getElementById('errorContainer');
             const loadingEl = document.getElementById('loadingIndicator');
+            const chartErrorEl = document.getElementById('chartError');
 
-            // State
+            // State for price
             let previousPrice = null;
             let currentPrice = null;
             let fetchInterval = null;
             let isFirstFetch = true;
 
-            // Binance API endpoint (BTCUSDT price)
-            const API_URL = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
+            // ---------- CHART SETUP ----------
+            let chart = null;
+            let candlestickSeries = null;
+            let chartInterval = null; // for updating candles
 
-            // Helper: format number with thousands separators and 2 decimals
+            // Binance endpoints
+            const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
+            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=30';
+
+            // Initialize Lightweight Chart
+            function initChart() {
+                const chartContainer = document.getElementById('candlestickChart');
+                // Remove any existing canvas
+                chartContainer.innerHTML = '';
+
+                chart = LightweightCharts.createChart(chartContainer, {
+                    width: chartContainer.clientWidth,
+                    height: 300,
+                    layout: {
+                        backgroundColor: '#0b0e1a',
+                        textColor: '#c3cce8',
+                        fontSize: 11,
+                        fontFamily: 'Inter, sans-serif',
+                    },
+                    grid: {
+                        vertLines: { color: '#1e2638' },
+                        horzLines: { color: '#1e2638' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: '#2f3a52',
+                        textColor: '#a0aecb',
+                    },
+                    timeScale: {
+                        borderColor: '#2f3a52',
+                        timeVisible: true,
+                        secondsVisible: false,
+                        tickMarkFormatter: (time) => {
+                            const date = new Date(time * 1000);
+                            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        },
+                    },
+                });
+
+                candlestickSeries = chart.addCandlestickSeries({
+                    upColor: '#4ade80',
+                    downColor: '#f87171',
+                    borderDownColor: '#f87171',
+                    borderUpColor: '#4ade80',
+                    wickDownColor: '#f87171',
+                    wickUpColor: '#4ade80',
+                });
+
+                // Handle resize
+                window.addEventListener('resize', () => {
+                    chart.applyOptions({ width: chartContainer.clientWidth });
+                });
+            }
+
+            // Convert Binance kline to lightweight-charts format
+            function formatKlineData(klines) {
+                return klines.map(k => ({
+                    time: Math.floor(k[0] / 1000),           // Binance ms -> seconds
+                    open: parseFloat(k[1]),
+                    high: parseFloat(k[2]),
+                    low: parseFloat(k[3]),
+                    close: parseFloat(k[4]),
+                }));
+            }
+
+            // Fetch candlestick data and update chart
+            async function fetchAndUpdateCandles() {
+                if (!candlestickSeries) return;
+
+                try {
+                    const response = await fetch(KLINE_API);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    const candleData = formatKlineData(data);
+                    
+                    candlestickSeries.setData(candleData);
+                    chart.timeScale().fitContent(); // adjust visible range
+                    
+                    // Hide any previous chart error
+                    chartErrorEl.classList.add('hidden');
+                } catch (err) {
+                    console.warn('Chart update failed:', err);
+                    chartErrorEl.textContent = '⚠️ Could not load candlestick data. Retrying…';
+                    chartErrorEl.classList.remove('hidden');
+                }
+            }
+
+            // ---------- PRICE UPDATE (unchanged from previous, but added chart init) ----------
             function formatPrice(price) {
                 if (price === null || price === undefined) return '—';
                 return parseFloat(price).toLocaleString('en-US', {
@@ -364,37 +508,24 @@
                 });
             }
 
-            // Helper: update UI with new price data
             function updateDashboard(priceData) {
-                // priceData is { symbol, price } from Binance
                 const newPrice = parseFloat(priceData.price);
-                if (isNaN(newPrice)) {
-                    throw new Error('Invalid price from API');
-                }
+                if (isNaN(newPrice)) throw new Error('Invalid price from API');
 
-                // Store current price
                 currentPrice = newPrice;
-
-                // Update price display
                 priceEl.innerHTML = `${formatPrice(newPrice)} <small>USD</small>`;
 
-                // Update timestamp
                 const now = new Date();
                 updateTimeEl.textContent = now.toLocaleTimeString('en-US', { 
-                    hour: '2-digit', 
-                    minute: '2-digit', 
-                    second: '2-digit',
-                    hour12: false 
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
                 });
 
-                // Calculate change if we have previous price
                 if (previousPrice !== null) {
                     const diff = newPrice - previousPrice;
                     const percent = (diff / previousPrice) * 100;
                     const absPercent = percent.toFixed(2);
-                    const sign = diff > 0 ? '+' : (diff < 0 ? '' : '±'); // diff negative shows minus sign automatically
+                    const sign = diff > 0 ? '+' : (diff < 0 ? '' : '±');
 
-                    // Set arrow and color
                     if (diff > 0) {
                         changeArrowEl.innerHTML = '▲';
                         changeArrowEl.className = 'change-up';
@@ -408,108 +539,74 @@
                         changeArrowEl.className = 'change-neutral';
                         changePercentEl.className = 'change-percent change-neutral';
                     }
-
                     changePercentEl.textContent = (diff === 0 ? '0.00' : (sign + absPercent)) + '%';
                 } else {
-                    // First fetch – no change to show
                     changeArrowEl.innerHTML = '⚫';
                     changeArrowEl.className = 'change-neutral';
                     changePercentEl.textContent = '0.00%';
                     changePercentEl.className = 'change-percent change-neutral';
                 }
 
-                // Update previous price for next comparison
                 previousPrice = newPrice;
-
-                // Hide any loading/error indicators
                 loadingEl.classList.add('hidden');
                 errorContainer.classList.add('hidden');
             }
 
-            // Show error message
             function showError(message) {
                 errorContainer.textContent = `⚠️ ${message}`;
                 errorContainer.classList.remove('hidden');
                 loadingEl.classList.add('hidden');
-                // Keep previous price visible if exists
             }
 
-            // Show loading (only on first fetch or manual)
             function showLoading() {
-                if (isFirstFetch) {
-                    loadingEl.classList.remove('hidden');
-                }
+                if (isFirstFetch) loadingEl.classList.remove('hidden');
             }
 
-            // Main fetch function
             async function fetchBitcoinPrice() {
-                // If it's the first load, show loading
-                if (isFirstFetch) {
-                    showLoading();
-                }
+                if (isFirstFetch) showLoading();
 
                 try {
-                    const response = await fetch(API_URL);
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status} — ${response.statusText}`);
-                    }
-
+                    const response = await fetch(PRICE_API);
+                    if (!response.ok) throw new Error(`HTTP ${response.status} — ${response.statusText}`);
                     const data = await response.json();
-
-                    // Binance returns { symbol: "BTCUSDT", price: "12345.67" }
-                    if (!data || !data.price) {
-                        throw new Error('Unexpected API response format');
-                    }
-
-                    // Success: update dashboard
+                    if (!data || !data.price) throw new Error('Unexpected API response format');
                     updateDashboard(data);
-                    
-                    // After first success, set flag false
                     if (isFirstFetch) isFirstFetch = false;
-
                 } catch (err) {
                     console.warn('Fetch error:', err);
-                    // Show error but don't wipe price if we already have one
-                    if (previousPrice === null) {
-                        // No price ever loaded – show fallback in price field?
-                        priceEl.innerHTML = '— <small>USD</small>';
-                    }
+                    if (previousPrice === null) priceEl.innerHTML = '— <small>USD</small>';
                     showError('Failed to load price. Retrying…');
-                    
-                    // Hide loading if it's still visible
                     loadingEl.classList.add('hidden');
                 }
             }
 
-            // Initial fetch and set interval
             function startRealTimeUpdates() {
-                // Fetch immediately
                 fetchBitcoinPrice();
-
-                // Then set interval every 5 seconds
                 if (fetchInterval) clearInterval(fetchInterval);
-                fetchInterval = setInterval(fetchBitcoinPrice, 5000); // 5000ms = 5 seconds
+                fetchInterval = setInterval(fetchBitcoinPrice, 5000);
             }
 
-            // Optional: stop interval if needed (not used here, but good practice)
             function stopUpdates() {
-                if (fetchInterval) {
-                    clearInterval(fetchInterval);
-                    fetchInterval = null;
-                }
+                if (fetchInterval) clearInterval(fetchInterval);
+                if (chartInterval) clearInterval(chartInterval);
             }
 
-            // Start everything when DOM ready
+            // ---------- INIT ON LOAD ----------
             window.addEventListener('load', () => {
+                // Initialize chart
+                initChart();
+                // First candle fetch
+                fetchAndUpdateCandles();
+                // Update candles every 60 seconds (reasonable for 1m candles)
+                chartInterval = setInterval(fetchAndUpdateCandles, 60000);
+
+                // Start price polling
                 startRealTimeUpdates();
             });
 
-            // (Optional) clean up on page unload – not strictly necessary but prevents memory leaks
-            window.addEventListener('beforeunload', () => {
-                stopUpdates();
-            });
+            window.addEventListener('beforeunload', stopUpdates);
 
+            // Cleanup interval on page unload
         })();
     </script>
 </body>
