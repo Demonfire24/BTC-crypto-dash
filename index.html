@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Smart Fib</title>
+    <title>Bitcoin · 5m + UT Bot + Colored Fib</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -484,8 +484,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Smart Fib</h1>
-                <p><span class="badge">LIVE</span> 500 candles · opposite candle fib</p>
+                <h1>Bitcoin · 5m + Colored Fib</h1>
+                <p><span class="badge">LIVE</span> 500 candles · light grid · custom fib colors</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -554,7 +554,10 @@
                 <div class="legend-item utbot"><span class="legend-line" style="background:#f97316;"></span> UT Bot Stop</div>
                 <div class="legend-item"><span class="shape-buy">▲</span> Buy</div>
                 <div class="legend-item"><span class="shape-sell">▼</span> Sell</div>
-                <div class="legend-item"><span style="color:#a78bfa;">━</span> Fib (opposite candle)</div>
+                <div class="legend-item"><span style="color:#a78bfa;">━</span> Fib (0/1)</div>
+                <div class="legend-item"><span style="color:#ef4444;">━</span> 0.618</div>
+                <div class="legend-item"><span style="color:#f97316;">━</span> 0.5</div>
+                <div class="legend-item"><span style="color:#4ade80;">━</span> 0.382/0.236</div>
             </div>
             <div id="candlestickChart"></div>
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
@@ -685,8 +688,8 @@
                         fontFamily: 'Inter, sans-serif',
                     },
                     grid: {
-                        vertLines: { color: '#1e2638' },
-                        horzLines: { color: '#1e2638' },
+                        vertLines: { color: '#2a3249' }, // lighter than before (#1e2638)
+                        horzLines: { color: '#2a3249' },
                     },
                     crosshair: {
                         mode: LightweightCharts.CrosshairMode.Normal,
@@ -748,6 +751,14 @@
                 fibSeriesArray = [];
             }
 
+            // Get color for fib level
+            function getFibColor(level) {
+                if (level === 0.618) return '#ef4444'; // red
+                if (level === 0.5) return '#f97316';   // orange
+                if (level === 0.382 || level === 0.236) return '#4ade80'; // green
+                return '#a78bfa'; // default purple for 0, 0.786, 1
+            }
+
             // Find the most recent opposite candle index
             function findOppositeCandleIndex(candleData, startIdx, isBuy) {
                 // isBuy = true -> we need a bearish candle (close < open)
@@ -788,16 +799,16 @@
                     [startPrice, endPrice] = [endPrice, startPrice]; // swap if needed
                 }
 
-                const lineColor = '#a78bfa'; // soft purple
                 const lastTime = candleData[candleData.length-1].time;
                 const signalTime = signalCandle.time;
 
-                fibLevels.forEach((level, idx) => {
+                fibLevels.forEach((level) => {
                     const price = startPrice + level * (endPrice - startPrice);
+                    const color = getFibColor(level);
                     const series = chart.addLineSeries({
-                        color: lineColor,
+                        color: color,
                         lineWidth: 1,
-                        lineStyle: idx === 0 || idx === fibLevels.length-1 ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+                        lineStyle: (level === 0 || level === 1) ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
                         priceLineVisible: false,
                         lastValueVisible: false,
                         title: `Fib ${level}`,
