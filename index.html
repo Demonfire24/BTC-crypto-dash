@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin Real‑Time Dashboard + Candlestick Chart</title>
+    <title>Bitcoin Real‑Time Dashboard · 5m Candles</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -25,7 +25,7 @@
 
         .dashboard {
             width: 100%;
-            max-width: 1000px;     /* wider to accommodate chart */
+            max-width: 1000px;
             background: rgba(18, 22, 36, 0.75);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
@@ -339,8 +339,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin tracker + candles</h1>
-                <p><span class="badge">LIVE</span> real-time price · 1m chart</p>
+                <h1>Bitcoin · 5m candles</h1>
+                <p><span class="badge">LIVE</span> real-time price · 5m chart (10s refresh)</p>
             </div>
         </div>
 
@@ -362,8 +362,8 @@
         <!-- candlestick chart section -->
         <div class="chart-container">
             <div class="chart-header">
-                <h3>📊 BTC/USDT · 1m candles</h3>
-                <span class="interval-badge">30 minutes history</span>
+                <h3>📊 BTC/USDT · 5m candles (last 50)</h3>
+                <span class="interval-badge">updates every 10s</span>
             </div>
             <div id="candlestickChart"></div>
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
@@ -376,7 +376,7 @@
                 <div class="time live-dot" id="updateTime">—</div>
             </div>
             <div class="source-badge">
-                <span>📡</span> Binance API <i>5s / 60s polling</i>
+                <span>📡</span> Binance REST <i>price 5s · candles 10s</i>
             </div>
         </div>
 
@@ -394,31 +394,29 @@
             const updateTimeEl = document.getElementById('updateTime');
             const changeArrowEl = document.getElementById('changeArrow');
             const changePercentEl = document.getElementById('changePercent');
-            const changeContainer = document.getElementById('changeContainer');
             const errorContainer = document.getElementById('errorContainer');
             const loadingEl = document.getElementById('loadingIndicator');
             const chartErrorEl = document.getElementById('chartError');
 
             // State for price
             let previousPrice = null;
-            let currentPrice = null;
             let fetchInterval = null;
             let isFirstFetch = true;
 
-            // ---------- CHART SETUP ----------
+            // ---------- CHART SETUP (5m candles, fast refresh) ----------
             let chart = null;
             let candlestickSeries = null;
-            let chartInterval = null; // for updating candles
+            let chartInterval = null;
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
-            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=30';
+            // 5m candles, last 50 candles (covers 250 minutes)
+            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=50';
 
             // Initialize Lightweight Chart
             function initChart() {
                 const chartContainer = document.getElementById('candlestickChart');
-                // Remove any existing canvas
-                chartContainer.innerHTML = '';
+                chartContainer.innerHTML = ''; // clear previous
 
                 chart = LightweightCharts.createChart(chartContainer, {
                     width: chartContainer.clientWidth,
@@ -460,7 +458,7 @@
                     wickUpColor: '#4ade80',
                 });
 
-                // Handle resize
+                // handle resize
                 window.addEventListener('resize', () => {
                     chart.applyOptions({ width: chartContainer.clientWidth });
                 });
@@ -469,7 +467,7 @@
             // Convert Binance kline to lightweight-charts format
             function formatKlineData(klines) {
                 return klines.map(k => ({
-                    time: Math.floor(k[0] / 1000),           // Binance ms -> seconds
+                    time: Math.floor(k[0] / 1000),   // ms -> seconds
                     open: parseFloat(k[1]),
                     high: parseFloat(k[2]),
                     low: parseFloat(k[3]),
@@ -477,7 +475,7 @@
                 }));
             }
 
-            // Fetch candlestick data and update chart
+            // Fetch candlestick data and update chart (called every 10 seconds)
             async function fetchAndUpdateCandles() {
                 if (!candlestickSeries) return;
 
@@ -488,9 +486,9 @@
                     const candleData = formatKlineData(data);
                     
                     candlestickSeries.setData(candleData);
-                    chart.timeScale().fitContent(); // adjust visible range
+                    // auto-scale to fit the new data
+                    chart.timeScale().fitContent();
                     
-                    // Hide any previous chart error
                     chartErrorEl.classList.add('hidden');
                 } catch (err) {
                     console.warn('Chart update failed:', err);
@@ -499,7 +497,7 @@
                 }
             }
 
-            // ---------- PRICE UPDATE (unchanged from previous, but added chart init) ----------
+            // ---------- PRICE UPDATE (5s polling, same as before) ----------
             function formatPrice(price) {
                 if (price === null || price === undefined) return '—';
                 return parseFloat(price).toLocaleString('en-US', {
@@ -512,7 +510,6 @@
                 const newPrice = parseFloat(priceData.price);
                 if (isNaN(newPrice)) throw new Error('Invalid price from API');
 
-                currentPrice = newPrice;
                 priceEl.innerHTML = `${formatPrice(newPrice)} <small>USD</small>`;
 
                 const now = new Date();
@@ -567,13 +564,13 @@
 
                 try {
                     const response = await fetch(PRICE_API);
-                    if (!response.ok) throw new Error(`HTTP ${response.status} — ${response.statusText}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     const data = await response.json();
-                    if (!data || !data.price) throw new Error('Unexpected API response format');
+                    if (!data || !data.price) throw new Error('Unexpected API response');
                     updateDashboard(data);
                     if (isFirstFetch) isFirstFetch = false;
                 } catch (err) {
-                    console.warn('Fetch error:', err);
+                    console.warn('Price fetch error:', err);
                     if (previousPrice === null) priceEl.innerHTML = '— <small>USD</small>';
                     showError('Failed to load price. Retrying…');
                     loadingEl.classList.add('hidden');
@@ -583,7 +580,7 @@
             function startRealTimeUpdates() {
                 fetchBitcoinPrice();
                 if (fetchInterval) clearInterval(fetchInterval);
-                fetchInterval = setInterval(fetchBitcoinPrice, 5000);
+                fetchInterval = setInterval(fetchBitcoinPrice, 5000); // price every 5s
             }
 
             function stopUpdates() {
@@ -593,20 +590,18 @@
 
             // ---------- INIT ON LOAD ----------
             window.addEventListener('load', () => {
-                // Initialize chart
+                // 1. init chart
                 initChart();
-                // First candle fetch
+                // 2. immediate candle fetch
                 fetchAndUpdateCandles();
-                // Update candles every 60 seconds (reasonable for 1m candles)
-                chartInterval = setInterval(fetchAndUpdateCandles, 60000);
+                // 3. refresh candles every 10 seconds for near-real-time updates
+                chartInterval = setInterval(fetchAndUpdateCandles, 10000); // 10s
 
-                // Start price polling
+                // 4. start price polling
                 startRealTimeUpdates();
             });
 
             window.addEventListener('beforeunload', stopUpdates);
-
-            // Cleanup interval on page unload
         })();
     </script>
 </body>
