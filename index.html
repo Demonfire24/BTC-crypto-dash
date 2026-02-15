@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Sticky Fib</title>
+    <title>Bitcoin · 5m + UT Bot + Sticky Fib (fixed)</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -484,8 +484,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Sticky Fib</h1>
-                <p><span class="badge">LIVE</span> 500 candles · dynamic endpoint · sticks on retrace</p>
+                <h1>Bitcoin · 5m + Sticky Fib (fixed)</h1>
+                <p><span class="badge">LIVE</span> tracks only new signals · sticks on retrace</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -621,6 +621,7 @@
 
             // Active Fibonacci tracking (sticky logic)
             let activeFib = null; // { type: 'buy'/'sell', startPrice, signalTime, extreme, stuck }
+            let lastSignalTime = null; // to detect new signals
 
             // Settings
             let settings = {
@@ -805,7 +806,7 @@
                 return -1;
             }
 
-            // Set new active fib from a marker
+            // Set new active fib from a marker (new signal)
             function setNewFibFromMarker(candleData, marker, signalIdx) {
                 const isBuy = marker.shape === 'triangleUp';
                 const signalCandle = candleData[signalIdx];
@@ -980,16 +981,22 @@
                 utBotLineSeries.setData(stopLine);
                 candlestickSeries.setMarkers(markers);
 
-                // If a new marker appears, set new active fib (replaces previous)
+                // Check for new signal (different from lastSignalTime)
                 if (markers.length > 0) {
                     const lastMarker = markers[markers.length-1];
-                    const signalTime = lastMarker.time;
-                    const signalIdx = candleData.findIndex(d => d.time === signalTime);
-                    if (signalIdx > 0) {
-                        setNewFibFromMarker(candleData, lastMarker, signalIdx);
+                    if (lastMarker.time !== lastSignalTime) {
+                        // new signal!
+                        lastSignalTime = lastMarker.time;
+                        const signalIdx = candleData.findIndex(d => d.time === lastMarker.time);
+                        if (signalIdx > 0) {
+                            setNewFibFromMarker(candleData, lastMarker, signalIdx);
+                        }
+                    } else {
+                        // same signal as before – update existing fib
+                        updateActiveFib(candleData);
                     }
-                } else if (activeFib) {
-                    // No new markers, update existing active fib
+                } else {
+                    // no markers at all – maybe clear fib? we keep it.
                     updateActiveFib(candleData);
                 }
             }
