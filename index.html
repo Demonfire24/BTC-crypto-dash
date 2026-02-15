@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Fib 0 at signal</title>
+    <title>Bitcoin · 5m + UT Bot + Dynamic Fib</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -502,8 +502,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Fib 0 at signal</h1>
-                <p><span class="badge">LIVE</span> signal level = 0% · opposite = 100%</p>
+                <h1>Bitcoin · 5m + Dynamic Fib</h1>
+                <p><span class="badge">LIVE</span> signal level moves with price · sticks on retrace</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -540,7 +540,7 @@
                     <input type="checkbox" id="showFib" checked>
                     <label for="showFib">Draw Fibonacci on signal</label>
                 </div>
-                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">Buy: signal high (0%) → last bearish low (100%)<br>Sell: signal low (0%) → last bullish high (100%)</p>
+                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">0% = signal level (moves with price)<br>100% = opposite candle (fixed)</p>
             </div>
             <p style="color:#7b88a8; font-size:0.7rem; margin-top:1rem;">Changes apply instantly</p>
         </div>
@@ -581,7 +581,7 @@
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
         </div>
 
-        <!-- Fib status indicator -->
+        <!-- Fib status indicator (shows current signal level) -->
         <div class="fib-status" id="fibStatus">
             <div>Active Fib: <span id="fibType">none</span></div>
             <div>Signal level (0%): <span id="fibSignal">—</span></div>
@@ -651,9 +651,8 @@
             let isFirstChartLoad = true;
             let fibSeriesArray = []; // store current Fib line series
 
-            // Active Fibonacci tracking (sticky logic)
-            // Now: signal level is the moving endpoint (0%), opposite is fixed (100%)
-            let activeFib = null; // { type: 'buy'/'sell', signalPrice, oppositePrice, signalTime, stuck }
+            // Active Fibonacci tracking (dynamic)
+            let activeFib = null; // { type, signalPrice, oppositePrice, signalTime, stuck }
             let lastSignalTime = null; // to detect new signals
 
             // Settings
@@ -801,7 +800,6 @@
                 if (!settings.showFib) return;
                 removeFibSeries();
 
-                // No swapping – signalPrice is 0%, oppositePrice is 100%
                 fibLevels.forEach((level) => {
                     const price = signalPrice + level * (oppositePrice - signalPrice);
                     const color = getFibColor(level);
@@ -823,8 +821,8 @@
 
             // Find the most recent opposite candle index
             function findOppositeCandleIndex(candleData, startIdx, isBuy) {
-                // isBuy = true -> we need a bearish candle (close < open)
-                // isBuy = false -> we need a bullish candle (close > open)
+                // isBuy = true -> need bearish candle (close < open)
+                // isBuy = false -> need bullish candle (close > open)
                 for (let i = startIdx - 1; i >= 0; i--) {
                     const candle = candleData[i];
                     const isBearish = candle.close < candle.open;
@@ -860,11 +858,11 @@
                 const oppositeCandle = candleData[oppositeIdx];
                 let signalPrice, oppositePrice;
                 if (isBuy) {
-                    // Buy: signal level is the high of signal candle, opposite is low of bearish candle
+                    // Buy: signal level = high of signal candle, opposite = low of bearish candle
                     signalPrice = signalCandle.high;
                     oppositePrice = oppositeCandle.low;
                 } else {
-                    // Sell: signal level is the low of signal candle, opposite is high of bullish candle
+                    // Sell: signal level = low of signal candle, opposite = high of bullish candle
                     signalPrice = signalCandle.low;
                     oppositePrice = oppositeCandle.high;
                 }
@@ -891,7 +889,6 @@
                 const lastTime = candleData[candleData.length-1].time;
 
                 if (activeFib.stuck) {
-                    // Still draw with current values
                     drawFibLines(activeFib.signalPrice, activeFib.oppositePrice, activeFib.signalTime, lastTime);
                     updateFibStatus();
                     return;
@@ -899,13 +896,13 @@
 
                 const { type, signalPrice, oppositePrice, signalTime } = activeFib;
                 const startIdx = candleData.findIndex(d => d.time === signalTime);
-                if (startIdx === -1) return;
+                if (startIdx === -1) return; // shouldn't happen
 
-                // Update signalPrice based on new candles (the moving endpoint)
+                // Calculate new signal price based on candles after the signal (including the signal candle itself? we already have its price as initial)
                 let newSignalPrice = signalPrice;
                 if (type === 'buy') {
-                    // For buy, signal level moves up to new highs
-                    for (let i = startIdx + 1; i < candleData.length; i++) {
+                    // Look for higher highs from signal candle onwards
+                    for (let i = startIdx; i < candleData.length; i++) {
                         if (candleData[i].high > newSignalPrice) {
                             newSignalPrice = candleData[i].high;
                         }
@@ -916,8 +913,8 @@
                         activeFib.stuck = true;
                     }
                 } else { // sell
-                    // For sell, signal level moves down to new lows
-                    for (let i = startIdx + 1; i < candleData.length; i++) {
+                    // Look for lower lows from signal candle onwards
+                    for (let i = startIdx; i < candleData.length; i++) {
                         if (candleData[i].low < newSignalPrice) {
                             newSignalPrice = candleData[i].low;
                         }
