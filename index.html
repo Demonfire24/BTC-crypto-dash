@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Sticky Fib (fixed)</title>
+    <title>Bitcoin · 5m + UT Bot + Sticky Fib (live)</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -362,6 +362,24 @@
             overflow: hidden;
         }
 
+        /* Fib status indicator */
+        .fib-status {
+            margin-top: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: #151b2b;
+            border-radius: 2rem;
+            border: 1px solid #2a3249;
+            color: #b7c1dd;
+            font-size: 0.8rem;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .fib-status span {
+            color: #d9e0f0;
+            font-weight: 500;
+        }
+
         /* footer grid (meta + status) */
         .dashboard-footer {
             display: flex;
@@ -484,8 +502,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Sticky Fib (fixed)</h1>
-                <p><span class="badge">LIVE</span> tracks only new signals · sticks on retrace</p>
+                <h1>Bitcoin · 5m + Sticky Fib (live)</h1>
+                <p><span class="badge">LIVE</span> dynamic endpoint · sticks on retrace</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -563,6 +581,13 @@
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
         </div>
 
+        <!-- Fib status indicator -->
+        <div class="fib-status" id="fibStatus">
+            <div>Active Fib: <span id="fibType">none</span></div>
+            <div>Extreme: <span id="fibExtreme">—</span></div>
+            <div>Stuck: <span id="fibStuck">—</span></div>
+        </div>
+
         <!-- footer -->
         <div class="dashboard-footer">
             <div class="last-updated">
@@ -590,6 +615,11 @@
             const errorContainer = document.getElementById('errorContainer');
             const loadingEl = document.getElementById('loadingIndicator');
             const chartErrorEl = document.getElementById('chartError');
+
+            // Fib status elements
+            const fibTypeEl = document.getElementById('fibType');
+            const fibExtremeEl = document.getElementById('fibExtreme');
+            const fibStuckEl = document.getElementById('fibStuck');
 
             // Settings panel elements
             const settingsToggle = document.getElementById('settingsToggle');
@@ -806,6 +836,19 @@
                 return -1;
             }
 
+            // Update fib status display
+            function updateFibStatus() {
+                if (activeFib) {
+                    fibTypeEl.textContent = activeFib.type === 'buy' ? 'BUY' : 'SELL';
+                    fibExtremeEl.textContent = activeFib.extreme.toFixed(2);
+                    fibStuckEl.textContent = activeFib.stuck ? 'Yes' : 'No';
+                } else {
+                    fibTypeEl.textContent = 'none';
+                    fibExtremeEl.textContent = '—';
+                    fibStuckEl.textContent = '—';
+                }
+            }
+
             // Set new active fib from a marker (new signal)
             function setNewFibFromMarker(candleData, marker, signalIdx) {
                 const isBuy = marker.shape === 'triangleUp';
@@ -829,12 +872,19 @@
                 // Draw initial fib
                 const lastTime = candleData[candleData.length-1].time;
                 drawFibLines(startPrice, initialExtreme, signalCandle.time, lastTime);
+                updateFibStatus();
             }
 
             // Update active fib with new data (called after each fetch)
             function updateActiveFib(candleData) {
                 if (!activeFib || !settings.showFib) return;
-                if (activeFib.stuck) return; // already stuck, no updates
+                if (activeFib.stuck) {
+                    // even if stuck, we redraw to ensure lines are visible
+                    const lastTime = candleData[candleData.length-1].time;
+                    drawFibLines(activeFib.startPrice, activeFib.extreme, activeFib.signalTime, lastTime);
+                    updateFibStatus();
+                    return;
+                }
 
                 const { type, startPrice, signalTime, extreme } = activeFib;
                 // find index of signalTime
@@ -875,6 +925,7 @@
                 // redraw fib with updated extreme (even if stuck, we redraw to reflect stickiness)
                 const lastTime = candleData[candleData.length-1].time;
                 drawFibLines(startPrice, activeFib.extreme, signalTime, lastTime);
+                updateFibStatus();
             }
 
             // Format kline data
@@ -996,7 +1047,7 @@
                         updateActiveFib(candleData);
                     }
                 } else {
-                    // no markers at all – maybe clear fib? we keep it.
+                    // no markers at all – update existing fib if any
                     updateActiveFib(candleData);
                 }
             }
