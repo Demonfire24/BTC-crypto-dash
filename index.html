@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin Real‑Time Dashboard · 5m Candles (200+)</title>
+    <title>Bitcoin · 5m candles + 21/200 EMA</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -210,6 +210,22 @@
             border: 1px solid #3b4668;
         }
 
+        .ema-legend {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 0.5rem;
+            padding: 0 0.5rem;
+            font-size: 0.8rem;
+        }
+        .ema-21 { color: #3b82f6; display: flex; align-items: center; gap: 4px; }
+        .ema-200 { color: #f97316; display: flex; align-items: center; gap: 4px; }
+        .legend-line {
+            width: 20px;
+            height: 2px;
+            background: currentColor;
+            display: inline-block;
+        }
+
         #candlestickChart {
             width: 100%;
             height: 300px;
@@ -339,8 +355,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m candles (200+)</h1>
-                <p><span class="badge">LIVE</span> real-time price · 16+ hours history</p>
+                <h1>Bitcoin · 5m + EMA (21,200)</h1>
+                <p><span class="badge">LIVE</span> 200 candles · 10s refresh</p>
             </div>
         </div>
 
@@ -359,11 +375,15 @@
             </div>
         </div>
 
-        <!-- candlestick chart section -->
+        <!-- candlestick chart section with EMA legend -->
         <div class="chart-container">
             <div class="chart-header">
                 <h3>📊 BTC/USDT · 5m candles (last 200)</h3>
                 <span class="interval-badge">updates every 10s</span>
+            </div>
+            <div class="ema-legend">
+                <div class="ema-21"><span class="legend-line"></span> EMA 21 (blue)</div>
+                <div class="ema-200"><span class="legend-line"></span> EMA 200 (orange)</div>
             </div>
             <div id="candlestickChart"></div>
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
@@ -406,12 +426,35 @@
             // ---------- CHART SETUP (5m candles, 200 history, 10s refresh) ----------
             let chart = null;
             let candlestickSeries = null;
+            let ema21Series = null;
+            let ema200Series = null;
             let chartInterval = null;
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
-            // 5m candles, last 200 candles (covers 1000 minutes ≈ 16.7 hours)
             const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200';
+
+            // EMA calculation
+            function calculateEMA(data, period) {
+                if (data.length < period) return []; // not enough data
+                const multiplier = 2 / (period + 1);
+                const emaValues = [];
+                // First EMA: SMA of first 'period' values
+                let sum = 0;
+                for (let i = 0; i < period; i++) {
+                    sum += data[i];
+                }
+                let prevEma = sum / period;
+                emaValues.push({ time: data.time?.[period-1] ?? i, value: prevEma }); // we'll replace time later
+
+                // Subsequent EMAs
+                for (let i = period; i < data.length; i++) {
+                    const ema = (data[i] * multiplier) + (prevEma * (1 - multiplier));
+                    emaValues.push({ value: ema });
+                    prevEma = ema;
+                }
+                return emaValues;
+            }
 
             // Initialize Lightweight Chart
             function initChart() {
@@ -458,6 +501,20 @@
                     wickUpColor: '#4ade80',
                 });
 
+                ema21Series = chart.addLineSeries({
+                    color: '#3b82f6',
+                    lineWidth: 2,
+                    priceLineVisible: false,
+                    title: 'EMA 21',
+                });
+
+                ema200Series = chart.addLineSeries({
+                    color: '#f97316',
+                    lineWidth: 2,
+                    priceLineVisible: false,
+                    title: 'EMA 200',
+                });
+
                 // handle resize
                 window.addEventListener('resize', () => {
                     chart.applyOptions({ width: chartContainer.clientWidth });
@@ -475,6 +532,46 @@
                 }));
             }
 
+            // Update EMAs based on current candle data
+            function updateEMAs(candleData) {
+                if (!candleData || candleData.length < 200) return; // need at least 200 for 200 EMA
+
+                const closePrices = candleData.map(d => d.close);
+                const times = candleData.map(d => d.time);
+
+                // Calculate 21 EMA
+                const ema21Values = [];
+                const period21 = 21;
+                const multiplier21 = 2 / (period21 + 1);
+                // SMA for first 21
+                let sum21 = 0;
+                for (let i = 0; i < period21; i++) sum21 += closePrices[i];
+                let prevEma21 = sum21 / period21;
+                ema21Values.push({ time: times[period21-1], value: prevEma21 });
+                for (let i = period21; i < closePrices.length; i++) {
+                    const ema = (closePrices[i] * multiplier21) + (prevEma21 * (1 - multiplier21));
+                    ema21Values.push({ time: times[i], value: ema });
+                    prevEma21 = ema;
+                }
+
+                // Calculate 200 EMA
+                const ema200Values = [];
+                const period200 = 200;
+                const multiplier200 = 2 / (period200 + 1);
+                let sum200 = 0;
+                for (let i = 0; i < period200; i++) sum200 += closePrices[i];
+                let prevEma200 = sum200 / period200;
+                ema200Values.push({ time: times[period200-1], value: prevEma200 });
+                for (let i = period200; i < closePrices.length; i++) {
+                    const ema = (closePrices[i] * multiplier200) + (prevEma200 * (1 - multiplier200));
+                    ema200Values.push({ time: times[i], value: ema });
+                    prevEma200 = ema;
+                }
+
+                ema21Series.setData(ema21Values);
+                ema200Series.setData(ema200Values);
+            }
+
             // Fetch candlestick data and update chart (called every 10 seconds)
             async function fetchAndUpdateCandles() {
                 if (!candlestickSeries) return;
@@ -486,9 +583,9 @@
                     const candleData = formatKlineData(data);
                     
                     candlestickSeries.setData(candleData);
-                    // auto-scale to fit the new data
-                    chart.timeScale().fitContent();
+                    updateEMAs(candleData);
                     
+                    chart.timeScale().fitContent();
                     chartErrorEl.classList.add('hidden');
                 } catch (err) {
                     console.warn('Chart update failed:', err);
@@ -590,14 +687,9 @@
 
             // ---------- INIT ON LOAD ----------
             window.addEventListener('load', () => {
-                // 1. init chart
                 initChart();
-                // 2. immediate candle fetch
-                fetchAndUpdateCandles();
-                // 3. refresh candles every 10 seconds for near-real-time updates
+                fetchAndUpdateCandles(); // immediate fetch
                 chartInterval = setInterval(fetchAndUpdateCandles, 10000); // 10s
-
-                // 4. start price polling
                 startRealTimeUpdates();
             });
 
