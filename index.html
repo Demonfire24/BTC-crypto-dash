@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTC Live Dashboard + Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .container { background: #1e293b; padding: 2rem; border-radius: 1rem; width: 90%; max-width: 800px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        .price-box { text-align: center; margin-bottom: 20px; }
+        #price { font-size: 3rem; font-weight: bold; margin: 10px 0; }
+        .up { color: #22c55e; }
+        .down { color: #ef4444; }
+        canvas { width: 100% !important; height: 400px !important; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="price-box">
+            <h2 style="color: #f59e0b; margin: 0;">Bitcoin (BTC/USDT)</h2>
+            <div id="price">Connecting...</div>
+        </div>
+        <canvas id="btcChart"></canvas>
+    </div>
+
+    <script>
+        const priceDisplay = document.getElementById('price');
+        const ctx = document.getElementById('btcChart').getContext('2d');
+        let lastPrice = 0;
+
+        // Initialize Chart.js
+        const btcChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // Time labels
+                datasets: [{
+                    label: 'Price (USDT)',
+                    data: [],
+                    borderColor: '#f59e0b',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: true,
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    tension: 0.2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { display: false },
+                    y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } }
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        // WebSocket Logic
+        const btcSocket = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@ticker");
+
+        btcSocket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const price = parseFloat(data.c).toFixed(2);
+            const time = new Date().toLocaleTimeString();
+
+            // Update Ticker
+            priceDisplay.innerText = `$${Number(price).toLocaleString()}`;
+            if (lastPrice > 0) {
+                priceDisplay.className = price >= lastPrice ? 'up' : 'down';
+            }
+            lastPrice = price;
+
+            // Update Chart
+            btcChart.data.labels.push(time);
+            btcChart.data.datasets[0].data.push(price);
+
+            // Keep only the last 50 data points to prevent lag
+            if (btcChart.data.labels.length > 50) {
+                btcChart.data.labels.shift();
+                btcChart.data.datasets[0].data.shift();
+            }
+
+            btcChart.update('none'); // Update without heavy animations for performance
+        };
+    </script>
+</body>
+</html>
