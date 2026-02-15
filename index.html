@@ -3,48 +3,59 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BTC 5m Live Dashboard</title>
+    <title>BTC 5m Pro Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.0/dist/chartjs-chart-financial.umd.min.js"></script>
     <style>
-        body { background-color: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; }
-        .container { background: #1e293b; padding: 1.5rem; border-radius: 1rem; width: 95%; max-width: 1000px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); margin-top: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
-        #price { font-size: 2rem; font-weight: bold; color: #f59e0b; }
-        .chart-wrapper { height: 500px; width: 100%; }
-        .status { font-size: 0.7rem; color: #64748b; }
+        body { background: #0f172a; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .card { background: #1e293b; border-radius: 12px; width: 100%; max-width: 1000px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 15px; }
+        #price { font-size: 2.2rem; font-weight: 800; color: #f59e0b; font-variant-numeric: tabular-nums; }
+        .chart-container { height: 450px; position: relative; }
+        #debug { background: #000; color: #22c55e; font-family: monospace; font-size: 11px; padding: 10px; margin-top: 15px; width: 100%; max-width: 1000px; border-radius: 8px; max-height: 100px; overflow-y: auto; box-sizing: border-box; }
+        .up { color: #22c55e !important; }
+        .down { color: #ef4444 !important; }
     </style>
 </head>
 <body>
 
-    <div class="container">
+    <div class="card">
         <div class="header">
             <div>
-                <h2 style="margin: 0;">Bitcoin BTC/USDT</h2>
-                <span class="status">Interval: 5m • Source: Binance</span>
+                <h2 style="margin: 0; font-size: 1.2rem;">Bitcoin / USDT</h2>
+                <div style="color: #64748b; font-size: 0.8rem;">5-Minute Candlesticks</div>
             </div>
             <div id="price">Syncing...</div>
         </div>
-        <div class="chart-wrapper">
+        <div class="chart-container">
             <canvas id="chart"></canvas>
         </div>
     </div>
 
+    <div id="debug">> System initializing...</div>
+
     <script>
-        // 1. Register the candlestick plugin (fixes the "hanging" issue)
+        // Log helper
+        function log(msg) {
+            const d = document.getElementById('debug');
+            d.innerHTML += `<br>> ${msg}`;
+            d.scrollTop = d.scrollHeight;
+        }
+
+        // Register Financial Plugin
         Chart.register(ChartFinancialControllers.CandlestickController, ChartFinancialControllers.CandlestickElement);
 
         const ctx = document.getElementById('chart').getContext('2d');
         const priceDisplay = document.getElementById('price');
-        
-        // 2. Setup Chart
+
+        // Setup Chart
         const chart = new Chart(ctx, {
             type: 'candlestick',
             data: {
                 datasets: [{
-                    label: 'BTC/USDT 5m',
+                    label: 'BTC/USDT',
                     data: [],
                     color: { up: '#22c55e', down: '#ef4444', unchanged: '#94a3b8' },
                     wickColor: { up: '#22c55e', down: '#ef4444', unchanged: '#94a3b8' }
@@ -54,57 +65,73 @@
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: { type: 'timeseries', grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
-                    y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } }
+                    x: { type: 'timeseries', grid: { color: '#334155' } },
+                    y: { grid: { color: '#334155' }, position: 'right' }
                 },
                 plugins: { legend: { display: false } }
             }
         });
 
-        // 3. Pre-fill data using REST API
-        async function preFillChart() {
+        // 1. Fetch History (Pre-fill)
+        async function loadHistory() {
+            log("Fetching 5m history from Binance API...");
             try {
-                const response = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=50');
-                const rawData = await response.json();
-                const formattedData = rawData.map(d => ({
+                const res = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=60');
+                if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+                const raw = await res.json();
+                
+                const formatted = raw.map(d => ({
                     x: d[0], o: parseFloat(d[1]), h: parseFloat(d[2]), l: parseFloat(d[3]), c: parseFloat(d[4])
                 }));
-                chart.data.datasets[0].data = formattedData;
+                
+                chart.data.datasets[0].data = formatted;
                 chart.update();
-                connectWebSocket(); // Only start WS after pre-fill
+                log(`Loaded ${formatted.length} candles. Connecting to live stream...`);
+                startLiveUpdates();
             } catch (err) {
-                console.error("Pre-fill failed:", err);
-                connectWebSocket();
+                log(`Error loading history: ${err.message}`);
+                log("Retrying in 3 seconds...");
+                setTimeout(loadHistory, 3000);
             }
         }
 
-        // 4. Connect WebSocket for live updates
-        function connectWebSocket() {
+        // 2. WebSocket for Real-time
+        function startLiveUpdates() {
             const ws = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@kline_5m");
 
+            ws.onopen = () => log("WebSocket Connected.");
+
             ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                const k = msg.k;
-                const candle = {
+                const data = JSON.parse(event.data);
+                const k = data.k; // Candle object
+                
+                const newCandle = {
                     x: k.t, o: parseFloat(k.o), h: parseFloat(k.h), l: parseFloat(k.l), c: parseFloat(k.c)
                 };
 
                 const dataset = chart.data.datasets[0].data;
-                if (dataset.length > 0 && dataset[dataset.length - 1].x === candle.x) {
-                    dataset[dataset.length - 1] = candle;
+                const lastIdx = dataset.length - 1;
+
+                // Update current candle or push new one
+                if (dataset.length > 0 && dataset[lastIdx].x === newCandle.x) {
+                    dataset[lastIdx] = newCandle;
                 } else {
-                    dataset.push(candle);
+                    dataset.push(newCandle);
+                    if (dataset.length > 100) dataset.shift();
                 }
 
-                if (dataset.length > 60) dataset.shift();
-
-                priceDisplay.innerText = `$${candle.c.toLocaleString()}`;
+                // UI Updates
+                priceDisplay.innerText = `$${newCandle.c.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+                priceDisplay.className = newCandle.c >= newCandle.o ? 'up' : 'down';
                 chart.update('none');
             };
+
+            ws.onerror = (e) => log("WebSocket Error. Check your connection.");
+            ws.onclose = () => log("WebSocket Closed. Refreshing...");
         }
 
-        // Start the process
-        preFillChart();
+        // Initialize
+        loadHistory();
     </script>
 </body>
 </html>
