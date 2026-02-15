@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Light Grid</title>
+    <title>Bitcoin · 5m + UT Bot + No Grid</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -484,8 +484,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Light Grid</h1>
-                <p><span class="badge">LIVE</span> 500 candles · soft grey grid · custom fib colors</p>
+                <h1>Bitcoin · 5m + No Grid</h1>
+                <p><span class="badge">LIVE</span> 500 candles · clean chart · custom fib colors</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -688,8 +688,8 @@
                         fontFamily: 'Inter, sans-serif',
                     },
                     grid: {
-                        vertLines: { color: '#5a6075' }, // light grey
-                        horzLines: { color: '#5a6075' }, // light grey
+                        vertLines: { color: 'transparent' }, // no grid
+                        horzLines: { color: 'transparent' }, // no grid
                     },
                     crosshair: {
                         mode: LightweightCharts.CrosshairMode.Normal,
