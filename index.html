@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Manual Control</title>
+    <title>Bitcoin · 5m + UT Bot + Smart Fib</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -484,13 +484,13 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + UT Bot</h1>
-                <p><span class="badge">LIVE</span> 500 candles · manual zoom · hide line</p>
+                <h1>Bitcoin · 5m + Smart Fib</h1>
+                <p><span class="badge">LIVE</span> 500 candles · opposite candle fib</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
 
-        <!-- settings panel (hidden by default) -->
+        <!-- settings panel -->
         <div class="settings-panel" id="settingsPanel">
             <h3>Indicator Settings <span>tweak & see</span></h3>
             <div class="setting-item">
@@ -516,6 +516,14 @@
                     <label for="showUtBotLine">Show UT Bot Stop line</label>
                 </div>
             </div>
+            <div class="divider"></div>
+            <div class="setting-item">
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="showFib" checked>
+                    <label for="showFib">Draw Fibonacci on signal</label>
+                </div>
+                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">Buy: last bearish low → signal close<br>Sell: signal close → last bullish high</p>
+            </div>
             <p style="color:#7b88a8; font-size:0.7rem; margin-top:1rem;">Changes apply instantly</p>
         </div>
 
@@ -534,7 +542,7 @@
             </div>
         </div>
 
-        <!-- candlestick chart section with all indicators legend -->
+        <!-- chart section -->
         <div class="chart-container">
             <div class="chart-header">
                 <h3>📊 BTC/USDT · 5m candles (last 500)</h3>
@@ -546,12 +554,13 @@
                 <div class="legend-item utbot"><span class="legend-line" style="background:#f97316;"></span> UT Bot Stop</div>
                 <div class="legend-item"><span class="shape-buy">▲</span> Buy</div>
                 <div class="legend-item"><span class="shape-sell">▼</span> Sell</div>
+                <div class="legend-item"><span style="color:#a78bfa;">━</span> Fib (opposite candle)</div>
             </div>
             <div id="candlestickChart"></div>
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
         </div>
 
-        <!-- footer: last updated + source -->
+        <!-- footer -->
         <div class="dashboard-footer">
             <div class="last-updated">
                 <div class="label">Last price update</div>
@@ -562,7 +571,6 @@
             </div>
         </div>
 
-        <!-- hidden loading / error placeholder (shown dynamically) -->
         <div id="errorContainer" class="error-message hidden"></div>
         <div id="loadingIndicator" class="loading hidden">
             <div class="spinner"></div> fetching latest price...
@@ -571,7 +579,7 @@
 
     <script>
         (function() {
-            // DOM elements for price
+            // DOM elements
             const priceEl = document.getElementById('btcPrice');
             const updateTimeEl = document.getElementById('updateTime');
             const changeArrowEl = document.getElementById('changeArrow');
@@ -588,44 +596,44 @@
             const keyInput = document.getElementById('keyInput');
             const atrPeriodInput = document.getElementById('atrPeriodInput');
             const showUtBotLineCheck = document.getElementById('showUtBotLine');
+            const showFibCheck = document.getElementById('showFib');
             const ema21Val = document.getElementById('ema21Val');
             const ema200Val = document.getElementById('ema200Val');
             const keyVal = document.getElementById('keyVal');
             const atrPeriodVal = document.getElementById('atrPeriodVal');
 
-            // State for price
+            // State
             let previousPrice = null;
             let fetchInterval = null;
             let isFirstFetch = true;
-
-            // Chart-related variables
             let chart = null;
             let candlestickSeries = null;
             let ema21Series = null;
             let ema200Series = null;
             let utBotLineSeries = null;
             let chartInterval = null;
-
-            // Store latest candle data for recalc on settings change
             let lastCandleData = null;
-
-            // Flag to prevent auto-fit after first load
             let isFirstChartLoad = true;
+            let fibSeriesArray = []; // store current Fib line series
 
-            // Indicator parameters (mutable)
+            // Settings
             let settings = {
                 ema21Period: 21,
                 ema200Period: 200,
                 utBotKey: 3.0,
                 utBotAtrPeriod: 10,
-                showUtBotLine: true
+                showUtBotLine: true,
+                showFib: true
             };
+
+            // Fib levels to draw
+            const fibLevels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
             const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=500';
 
-            // ---------- UI: toggle settings panel ----------
+            // UI: settings panel toggle
             settingsToggle.addEventListener('click', (e) => {
                 e.stopPropagation();
                 settingsPanel.classList.toggle('visible');
@@ -636,39 +644,36 @@
                 }
             });
 
-            // Update displayed values and trigger recalc
             function updateSettingsFromInputs() {
                 settings.ema21Period = parseInt(ema21Input.value, 10) || 21;
                 settings.ema200Period = parseInt(ema200Input.value, 10) || 200;
                 settings.utBotKey = parseFloat(keyInput.value) || 3.0;
                 settings.utBotAtrPeriod = parseInt(atrPeriodInput.value, 10) || 10;
                 settings.showUtBotLine = showUtBotLineCheck.checked;
+                settings.showFib = showFibCheck.checked;
 
                 ema21Val.textContent = settings.ema21Period;
                 ema200Val.textContent = settings.ema200Period;
                 keyVal.textContent = settings.utBotKey.toFixed(1);
                 atrPeriodVal.textContent = settings.utBotAtrPeriod;
 
-                // Toggle UT Bot line visibility
                 if (utBotLineSeries) {
                     utBotLineSeries.applyOptions({ visible: settings.showUtBotLine });
                 }
 
-                // Recalculate indicators if we have data
                 if (lastCandleData) {
                     recalcIndicatorsFromData(lastCandleData);
                 }
             }
 
-            // Attach event listeners to inputs
-            [ema21Input, ema200Input, keyInput, atrPeriodInput, showUtBotLineCheck].forEach(input => {
+            [ema21Input, ema200Input, keyInput, atrPeriodInput, showUtBotLineCheck, showFibCheck].forEach(input => {
                 input.addEventListener('input', updateSettingsFromInputs);
             });
 
             // ---------- CHART SETUP ----------
             function initChart() {
                 const chartContainer = document.getElementById('candlestickChart');
-                chartContainer.innerHTML = ''; // clear previous
+                chartContainer.innerHTML = '';
 
                 chart = LightweightCharts.createChart(chartContainer, {
                     width: chartContainer.clientWidth,
@@ -729,7 +734,7 @@
                     lineWidth: 2,
                     priceLineVisible: false,
                     title: 'UT Bot Stop',
-                    visible: settings.showUtBotLine, // initial visibility
+                    visible: settings.showUtBotLine,
                 });
 
                 window.addEventListener('resize', () => {
@@ -737,7 +742,75 @@
                 });
             }
 
-            // Convert Binance kline to lightweight-charts format
+            // Helper: remove all Fib series
+            function removeFibSeries() {
+                fibSeriesArray.forEach(series => chart.removeSeries(series));
+                fibSeriesArray = [];
+            }
+
+            // Find the most recent opposite candle index
+            function findOppositeCandleIndex(candleData, startIdx, isBuy) {
+                // isBuy = true -> we need a bearish candle (close < open)
+                // isBuy = false -> we need a bullish candle (close > open)
+                for (let i = startIdx - 1; i >= 0; i--) {
+                    const candle = candleData[i];
+                    const isBearish = candle.close < candle.open;
+                    const isBullish = candle.close > candle.open;
+                    if (isBuy && isBearish) return i;
+                    if (!isBuy && isBullish) return i;
+                }
+                return -1; // not found
+            }
+
+            // Draw Fibonacci levels for a given signal
+            function drawFibForSignal(candleData, signalIdx, isBuy) {
+                if (!settings.showFib) return;
+                removeFibSeries(); // only keep the latest
+
+                const signalCandle = candleData[signalIdx];
+                const oppositeIdx = findOppositeCandleIndex(candleData, signalIdx, isBuy);
+                if (oppositeIdx === -1) return; // no opposite candle found
+
+                const oppositeCandle = candleData[oppositeIdx];
+                let startPrice, endPrice;
+                if (isBuy) {
+                    // Buy: from low of bearish candle to close of signal candle
+                    startPrice = oppositeCandle.low;
+                    endPrice = signalCandle.close;
+                } else {
+                    // Sell: from close of signal candle to high of bullish candle
+                    startPrice = signalCandle.close;
+                    endPrice = oppositeCandle.high;
+                }
+
+                // Ensure start < end for proper fib levels
+                if (startPrice > endPrice) {
+                    [startPrice, endPrice] = [endPrice, startPrice]; // swap if needed
+                }
+
+                const lineColor = '#a78bfa'; // soft purple
+                const lastTime = candleData[candleData.length-1].time;
+                const signalTime = signalCandle.time;
+
+                fibLevels.forEach((level, idx) => {
+                    const price = startPrice + level * (endPrice - startPrice);
+                    const series = chart.addLineSeries({
+                        color: lineColor,
+                        lineWidth: 1,
+                        lineStyle: idx === 0 || idx === fibLevels.length-1 ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                        title: `Fib ${level}`,
+                    });
+                    series.setData([
+                        { time: signalTime, value: price },
+                        { time: lastTime, value: price }
+                    ]);
+                    fibSeriesArray.push(series);
+                });
+            }
+
+            // Format kline data
             function formatKlineData(klines) {
                 return klines.map(k => ({
                     time: Math.floor(k[0] / 1000),
@@ -748,9 +821,7 @@
                 }));
             }
 
-            // ---------- INDICATOR CALCULATIONS (using current settings) ----------
-
-            // ATR (Wilder's smoothing)
+            // ATR calculation
             function computeATR(high, low, close, period) {
                 const tr = [];
                 const atr = new Array(high.length).fill(NaN);
@@ -769,7 +840,7 @@
                 return atr;
             }
 
-            // UT Bot trailing stop and signals
+            // UT Bot calculation (also returns markers)
             function computeUTBot(candleData, key, atrPeriod) {
                 const closes = candleData.map(d => d.close);
                 const highs = candleData.map(d => d.high);
@@ -808,7 +879,7 @@
                 return { stopLine, markers };
             }
 
-            // EMA calculation (generic)
+            // EMA calculation
             function computeEMA(closes, times, period) {
                 if (closes.length < period) return [];
                 const multiplier = 2 / (period + 1);
@@ -825,7 +896,7 @@
                 return values;
             }
 
-            // Recalculate all indicators from given candle data using current settings
+            // Main recalc function
             function recalcIndicatorsFromData(candleData) {
                 if (!candleData || candleData.length === 0) return;
 
@@ -842,9 +913,21 @@
                 const { stopLine, markers } = computeUTBot(candleData, settings.utBotKey, settings.utBotAtrPeriod);
                 utBotLineSeries.setData(stopLine);
                 candlestickSeries.setMarkers(markers);
+
+                // If a new marker appears, draw Fib using opposite candle logic
+                if (markers.length > 0) {
+                    // Get the latest marker
+                    const lastMarker = markers[markers.length-1];
+                    const signalTime = lastMarker.time;
+                    const signalIdx = candleData.findIndex(d => d.time === signalTime);
+                    if (signalIdx > 0) { // need at least one previous candle to search
+                        const isBuy = lastMarker.shape === 'triangleUp';
+                        drawFibForSignal(candleData, signalIdx, isBuy);
+                    }
+                }
             }
 
-            // ---------- FETCH AND UPDATE ----------
+            // Fetch and update
             async function fetchAndUpdateCandles() {
                 if (!candlestickSeries) return;
 
@@ -853,22 +936,16 @@
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     const data = await response.json();
                     const candleData = formatKlineData(data);
-                    
-                    // Store for later recalc
                     lastCandleData = candleData;
 
-                    // Update candlesticks
                     candlestickSeries.setData(candleData);
-                    
-                    // Update all indicators using current settings
                     recalcIndicatorsFromData(candleData);
 
-                    // Auto-fit only on first load, never afterwards
                     if (isFirstChartLoad) {
                         chart.timeScale().fitContent();
                         isFirstChartLoad = false;
                     }
-                    
+
                     chartErrorEl.classList.add('hidden');
                 } catch (err) {
                     console.warn('Chart update failed:', err);
@@ -877,7 +954,7 @@
                 }
             }
 
-            // ---------- PRICE UPDATE (unchanged) ----------
+            // Price update
             function formatPrice(price) {
                 if (price === null || price === undefined) return '—';
                 return parseFloat(price).toLocaleString('en-US', {
@@ -968,11 +1045,11 @@
                 if (chartInterval) clearInterval(chartInterval);
             }
 
-            // ---------- INIT ----------
+            // INIT
             window.addEventListener('load', () => {
                 initChart();
-                fetchAndUpdateCandles(); // immediate fetch (will auto-fit once)
-                chartInterval = setInterval(fetchAndUpdateCandles, 10000); // 10s
+                fetchAndUpdateCandles();
+                chartInterval = setInterval(fetchAndUpdateCandles, 10000);
                 startRealTimeUpdates();
             });
 
