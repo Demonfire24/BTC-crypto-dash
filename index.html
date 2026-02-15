@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Live Settings</title>
+    <title>Bitcoin · 5m + UT Bot + Manual Control</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -159,7 +159,8 @@
             font-size: 0.85rem;
             margin-bottom: 0.3rem;
         }
-        .setting-item input {
+        .setting-item input[type="number"],
+        .setting-item input[type="checkbox"] {
             width: 100%;
             background: #0f1322;
             border: 1px solid #2f3a58;
@@ -168,6 +169,17 @@
             color: white;
             font-size: 0.9rem;
             outline: none;
+        }
+        .setting-item input[type="checkbox"] {
+            width: auto;
+            margin-right: 0.5rem;
+            accent-color: #f7931a;
+        }
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: white;
         }
         .setting-item input:focus {
             border-color: #f7931a;
@@ -473,7 +485,7 @@
             <div class="btc-icon">₿</div>
             <div class="title">
                 <h1>Bitcoin · 5m + UT Bot</h1>
-                <p><span class="badge">LIVE</span> 500 candles · 41h+ history · 10s refresh</p>
+                <p><span class="badge">LIVE</span> 500 candles · manual zoom · hide line</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -497,6 +509,12 @@
             <div class="setting-item">
                 <label>UT Bot ATR Period <span id="atrPeriodVal">10</span></label>
                 <input type="number" id="atrPeriodInput" min="1" max="100" value="10" step="1">
+            </div>
+            <div class="setting-item">
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="showUtBotLine" checked>
+                    <label for="showUtBotLine">Show UT Bot Stop line</label>
+                </div>
             </div>
             <p style="color:#7b88a8; font-size:0.7rem; margin-top:1rem;">Changes apply instantly</p>
         </div>
@@ -569,6 +587,7 @@
             const ema200Input = document.getElementById('ema200Input');
             const keyInput = document.getElementById('keyInput');
             const atrPeriodInput = document.getElementById('atrPeriodInput');
+            const showUtBotLineCheck = document.getElementById('showUtBotLine');
             const ema21Val = document.getElementById('ema21Val');
             const ema200Val = document.getElementById('ema200Val');
             const keyVal = document.getElementById('keyVal');
@@ -590,12 +609,16 @@
             // Store latest candle data for recalc on settings change
             let lastCandleData = null;
 
+            // Flag to prevent auto-fit after first load
+            let isFirstChartLoad = true;
+
             // Indicator parameters (mutable)
             let settings = {
                 ema21Period: 21,
                 ema200Period: 200,
                 utBotKey: 3.0,
-                utBotAtrPeriod: 10
+                utBotAtrPeriod: 10,
+                showUtBotLine: true
             };
 
             // Binance endpoints
@@ -607,7 +630,6 @@
                 e.stopPropagation();
                 settingsPanel.classList.toggle('visible');
             });
-            // Close panel when clicking outside (optional)
             document.addEventListener('click', (e) => {
                 if (!settingsPanel.contains(e.target) && !settingsToggle.contains(e.target)) {
                     settingsPanel.classList.remove('visible');
@@ -616,17 +638,21 @@
 
             // Update displayed values and trigger recalc
             function updateSettingsFromInputs() {
-                // Update settings object
                 settings.ema21Period = parseInt(ema21Input.value, 10) || 21;
                 settings.ema200Period = parseInt(ema200Input.value, 10) || 200;
                 settings.utBotKey = parseFloat(keyInput.value) || 3.0;
                 settings.utBotAtrPeriod = parseInt(atrPeriodInput.value, 10) || 10;
+                settings.showUtBotLine = showUtBotLineCheck.checked;
 
-                // Update labels
                 ema21Val.textContent = settings.ema21Period;
                 ema200Val.textContent = settings.ema200Period;
                 keyVal.textContent = settings.utBotKey.toFixed(1);
                 atrPeriodVal.textContent = settings.utBotAtrPeriod;
+
+                // Toggle UT Bot line visibility
+                if (utBotLineSeries) {
+                    utBotLineSeries.applyOptions({ visible: settings.showUtBotLine });
+                }
 
                 // Recalculate indicators if we have data
                 if (lastCandleData) {
@@ -635,7 +661,7 @@
             }
 
             // Attach event listeners to inputs
-            [ema21Input, ema200Input, keyInput, atrPeriodInput].forEach(input => {
+            [ema21Input, ema200Input, keyInput, atrPeriodInput, showUtBotLineCheck].forEach(input => {
                 input.addEventListener('input', updateSettingsFromInputs);
             });
 
@@ -703,6 +729,7 @@
                     lineWidth: 2,
                     priceLineVisible: false,
                     title: 'UT Bot Stop',
+                    visible: settings.showUtBotLine, // initial visibility
                 });
 
                 window.addEventListener('resize', () => {
@@ -835,8 +862,13 @@
                     
                     // Update all indicators using current settings
                     recalcIndicatorsFromData(candleData);
+
+                    // Auto-fit only on first load, never afterwards
+                    if (isFirstChartLoad) {
+                        chart.timeScale().fitContent();
+                        isFirstChartLoad = false;
+                    }
                     
-                    chart.timeScale().fitContent();
                     chartErrorEl.classList.add('hidden');
                 } catch (err) {
                     console.warn('Chart update failed:', err);
@@ -939,7 +971,7 @@
             // ---------- INIT ----------
             window.addEventListener('load', () => {
                 initChart();
-                fetchAndUpdateCandles(); // immediate fetch
+                fetchAndUpdateCandles(); // immediate fetch (will auto-fit once)
                 chartInterval = setInterval(fetchAndUpdateCandles, 10000); // 10s
                 startRealTimeUpdates();
             });
