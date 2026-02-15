@@ -3,87 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BTC Live Dashboard + Chart</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>BTC Live Candlestick Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.0/dist/chartjs-chart-financial.umd.min.js"></script>
     <style>
         body { background-color: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; }
-        .container { background: #1e293b; padding: 2rem; border-radius: 1rem; width: 90%; max-width: 800px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
-        .price-box { text-align: center; margin-bottom: 20px; }
-        #price { font-size: 3rem; font-weight: bold; margin: 10px 0; }
-        .up { color: #22c55e; }
-        .down { color: #ef4444; }
-        canvas { width: 100% !important; height: 400px !important; }
+        .container { background: #1e293b; padding: 2rem; border-radius: 1rem; width: 95%; max-width: 900px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        .header { text-align: center; margin-bottom: 20px; }
+        #price { font-size: 2.5rem; font-weight: bold; color: #f59e0b; }
+        canvas { width: 100% !important; height: 450px !important; }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <div class="price-box">
-            <h2 style="color: #f59e0b; margin: 0;">Bitcoin (BTC/USDT)</h2>
-            <div id="price">Connecting...</div>
+        <div class="header">
+            <h2 style="margin: 0;">BTC/USDT 1m Candlesticks</h2>
+            <div id="price">Loading...</div>
         </div>
-        <canvas id="btcChart"></canvas>
+        <canvas id="chart"></canvas>
     </div>
 
     <script>
+        const ctx = document.getElementById('chart').getContext('2d');
         const priceDisplay = document.getElementById('price');
-        const ctx = document.getElementById('btcChart').getContext('2d');
-        let lastPrice = 0;
 
-        // Initialize Chart.js
-        const btcChart = new Chart(ctx, {
-            type: 'line',
+        // Initialize Candlestick Chart
+        const chart = new Chart(ctx, {
+            type: 'candlestick',
             data: {
-                labels: [], // Time labels
                 datasets: [{
-                    label: 'Price (USDT)',
-                    data: [],
-                    borderColor: '#f59e0b',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    fill: true,
-                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                    tension: 0.2
+                    label: 'BTC/USDT',
+                    data: [], // Array of {x: timestamp, o, h, l, c}
+                    color: { up: '#22c55e', down: '#ef4444', unchanged: '#94a3b8' }
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: { display: false },
+                    x: { type: 'timeseries', grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
                     y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } }
                 },
                 plugins: { legend: { display: false } }
             }
         });
 
-        // WebSocket Logic
-        const btcSocket = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@ticker");
+        // Binance WebSocket (1-minute K-line/Candlestick)
+        const ws = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@kline_1m");
 
-        btcSocket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            const price = parseFloat(data.c).toFixed(2);
-            const time = new Date().toLocaleTimeString();
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            const k = msg.k; // The candlestick data object
+            
+            // Format for Chart.js Financial: {x: timestamp, o: open, h: high, l: low, c: close}
+            const candle = {
+                x: k.t, // Start time
+                o: parseFloat(k.o),
+                h: parseFloat(k.h),
+                l: parseFloat(k.l),
+                c: parseFloat(k.c)
+            };
 
-            // Update Ticker
-            priceDisplay.innerText = `$${Number(price).toLocaleString()}`;
-            if (lastPrice > 0) {
-                priceDisplay.className = price >= lastPrice ? 'up' : 'down';
+            const dataset = chart.data.datasets[0].data;
+            
+            // If the last candle in our data has the same start time, update it.
+            // Otherwise, push a new candle.
+            if (dataset.length > 0 && dataset[dataset.length - 1].x === candle.x) {
+                dataset[dataset.length - 1] = candle;
+            } else {
+                dataset.push(candle);
             }
-            lastPrice = price;
 
-            // Update Chart
-            btcChart.data.labels.push(time);
-            btcChart.data.datasets[0].data.push(price);
+            // Keep the last 40 candles
+            if (dataset.length > 40) dataset.shift();
 
-            // Keep only the last 50 data points to prevent lag
-            if (btcChart.data.labels.length > 50) {
-                btcChart.data.labels.shift();
-                btcChart.data.datasets[0].data.shift();
-            }
-
-            btcChart.update('none'); // Update without heavy animations for performance
+            // Update UI
+            priceDisplay.innerText = `$${candle.c.toLocaleString()}`;
+            chart.update('none');
         };
     </script>
 </body>
 </html>
+
