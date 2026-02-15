@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m candles + 21/200 EMA</title>
+    <title>Bitcoin · 5m + EMA (21,200) · 500 candles</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -356,7 +356,7 @@
             <div class="btc-icon">₿</div>
             <div class="title">
                 <h1>Bitcoin · 5m + EMA (21,200)</h1>
-                <p><span class="badge">LIVE</span> 200 candles · 10s refresh</p>
+                <p><span class="badge">LIVE</span> 500 candles · 41h+ history · 10s refresh</p>
             </div>
         </div>
 
@@ -378,7 +378,7 @@
         <!-- candlestick chart section with EMA legend -->
         <div class="chart-container">
             <div class="chart-header">
-                <h3>📊 BTC/USDT · 5m candles (last 200)</h3>
+                <h3>📊 BTC/USDT · 5m candles (last 500)</h3>
                 <span class="interval-badge">updates every 10s</span>
             </div>
             <div class="ema-legend">
@@ -423,7 +423,7 @@
             let fetchInterval = null;
             let isFirstFetch = true;
 
-            // ---------- CHART SETUP (5m candles, 200 history, 10s refresh) ----------
+            // ---------- CHART SETUP (5m candles, 500 history, 10s refresh) ----------
             let chart = null;
             let candlestickSeries = null;
             let ema21Series = null;
@@ -432,29 +432,8 @@
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
-            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200';
-
-            // EMA calculation
-            function calculateEMA(data, period) {
-                if (data.length < period) return []; // not enough data
-                const multiplier = 2 / (period + 1);
-                const emaValues = [];
-                // First EMA: SMA of first 'period' values
-                let sum = 0;
-                for (let i = 0; i < period; i++) {
-                    sum += data[i];
-                }
-                let prevEma = sum / period;
-                emaValues.push({ time: data.time?.[period-1] ?? i, value: prevEma }); // we'll replace time later
-
-                // Subsequent EMAs
-                for (let i = period; i < data.length; i++) {
-                    const ema = (data[i] * multiplier) + (prevEma * (1 - multiplier));
-                    emaValues.push({ value: ema });
-                    prevEma = ema;
-                }
-                return emaValues;
-            }
+            // 5m candles, last 500 candles (covers 2500 minutes ≈ 41.6 hours)
+            const KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=500';
 
             // Initialize Lightweight Chart
             function initChart() {
