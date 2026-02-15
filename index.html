@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Fib to right edge</title>
+    <title>Bitcoin · 5m + UT Bot + Fib oriented + extended</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -502,8 +502,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Fib to right edge</h1>
-                <p><span class="badge">LIVE</span> extends with new candles · sticks on retrace</p>
+                <h1>Bitcoin · 5m + Fib oriented + extended</h1>
+                <p><span class="badge">LIVE</span> correct direction · always to right edge</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -794,15 +794,14 @@
             }
 
             // Draw Fibonacci levels given start and end prices and signal time
+            // No swapping – levels are oriented from start to end.
             function drawFibLines(startPrice, endPrice, signalTime, lastTime) {
                 if (!settings.showFib) return;
                 removeFibSeries();
 
-                // Ensure start < end for proper fib levels
-                if (startPrice > endPrice) {
-                    [startPrice, endPrice] = [endPrice, startPrice];
-                }
-
+                // Do NOT swap – we want the levels oriented from start to end.
+                // For buy: start (low) → end (high) gives ascending levels (0 at low)
+                // For sell: start (high) → end (low) gives descending levels (0 at high)
                 fibLevels.forEach((level) => {
                     const price = startPrice + level * (endPrice - startPrice);
                     const color = getFibColor(level);
@@ -857,9 +856,16 @@
                 if (oppositeIdx === -1) return;
 
                 const oppositeCandle = candleData[oppositeIdx];
-                let startPrice = isBuy ? oppositeCandle.low : oppositeCandle.high;
-                // initial extreme: for buy, start at signal candle's high; for sell, start at signal candle's low
-                let initialExtreme = isBuy ? signalCandle.high : signalCandle.low;
+                let startPrice, initialExtreme;
+                if (isBuy) {
+                    // Buy: start from bearish low, extreme is highest high after signal
+                    startPrice = oppositeCandle.low;
+                    initialExtreme = signalCandle.high;
+                } else {
+                    // Sell: start from bullish high, extreme is lowest low after signal
+                    startPrice = oppositeCandle.high;
+                    initialExtreme = signalCandle.low;
+                }
 
                 activeFib = {
                     type: isBuy ? 'buy' : 'sell',
@@ -901,7 +907,7 @@
                             newExtreme = candleData[i].high;
                         }
                     }
-                    // Check retrace
+                    // Check retrace: if latest close < newExtreme, stick
                     const latestClose = candleData[candleData.length-1].close;
                     if (latestClose < newExtreme) {
                         activeFib.stuck = true;
