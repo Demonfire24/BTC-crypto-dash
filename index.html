@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Fixed Fib Extensions</title>
+    <title>Bitcoin · 5m + UT Bot + Fixed Fib Extensions (dynamic working)</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -502,8 +502,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Fixed Fib Extensions</h1>
-                <p><span class="badge">LIVE</span> dynamic 0% · fixed -50%/-100%/-200%</p>
+                <h1>Bitcoin · 5m + Dynamic Fib (fixed)</h1>
+                <p><span class="badge">LIVE</span> 0% moves with price · extensions fixed</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -832,7 +832,7 @@
                     fibSeriesArray.push(series);
                 });
 
-                // Draw fixed extension levels (using original signalPrice when they were calculated)
+                // Draw fixed extension levels (using original fixedExtensions)
                 extensionLevels.forEach((ext) => {
                     const price = fixedExtensions[ext];
                     const color = extensionColors[ext.toString()];
@@ -965,6 +965,7 @@
                     }
                 }
 
+                // Update signalPrice if changed
                 if (newSignalPrice !== signalPrice) {
                     activeFib.signalPrice = newSignalPrice;
                 }
