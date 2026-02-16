@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitcoin · 5m + UT Bot + Dynamic Fib</title>
+    <title>Bitcoin · 5m + UT Bot + Fixed Fib Extensions</title>
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -502,8 +502,8 @@
         <div class="header">
             <div class="btc-icon">₿</div>
             <div class="title">
-                <h1>Bitcoin · 5m + Dynamic Fib</h1>
-                <p><span class="badge">LIVE</span> signal level moves with price · sticks on retrace</p>
+                <h1>Bitcoin · 5m + Fixed Fib Extensions</h1>
+                <p><span class="badge">LIVE</span> dynamic 0% · fixed -50%/-100%/-200%</p>
             </div>
             <div class="settings-button" id="settingsToggle">⚙️</div>
         </div>
@@ -540,7 +540,7 @@
                     <input type="checkbox" id="showFib" checked>
                     <label for="showFib">Draw Fibonacci on signal</label>
                 </div>
-                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">0% = signal level (moves with price)<br>100% = opposite candle (fixed)</p>
+                <p style="color:#7b88a8; font-size:0.7rem; margin-top:0.3rem;">0% dynamic · -50%/-100%/-200% fixed</p>
             </div>
             <p style="color:#7b88a8; font-size:0.7rem; margin-top:1rem;">Changes apply instantly</p>
         </div>
@@ -576,12 +576,15 @@
                 <div class="legend-item"><span style="color:#ef4444;">━</span> 0.618</div>
                 <div class="legend-item"><span style="color:#f97316;">━</span> 0.5</div>
                 <div class="legend-item"><span style="color:#4ade80;">━</span> 0.382/0.236</div>
+                <div class="legend-item"><span style="color:#d1d5db;">━</span> -50%</div>
+                <div class="legend-item"><span style="color:#9ca3af;">━</span> -100%</div>
+                <div class="legend-item"><span style="color:#6b7280;">━</span> -200%</div>
             </div>
             <div id="candlestickChart"></div>
             <div id="chartError" class="error-message hidden" style="margin-top:0.8rem; text-align:center;"></div>
         </div>
 
-        <!-- Fib status indicator (shows current signal level) -->
+        <!-- Fib status indicator -->
         <div class="fib-status" id="fibStatus">
             <div>Active Fib: <span id="fibType">none</span></div>
             <div>Signal level (0%): <span id="fibSignal">—</span></div>
@@ -651,8 +654,8 @@
             let isFirstChartLoad = true;
             let fibSeriesArray = []; // store current Fib line series
 
-            // Active Fibonacci tracking (dynamic)
-            let activeFib = null; // { type, signalPrice, oppositePrice, signalTime, stuck }
+            // Active Fibonacci tracking (dynamic + fixed extensions)
+            let activeFib = null; // { type, signalPrice (dynamic), oppositePrice (fixed), fixedExtensions: { m50, m100, m200 }, signalTime, stuck }
             let lastSignalTime = null; // to detect new signals
 
             // Settings
@@ -665,8 +668,16 @@
                 showFib: true
             };
 
-            // Fib levels to draw
+            // Standard fib levels (0 to 1)
             const fibLevels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            // Extension levels (negative)
+            const extensionLevels = [-0.5, -1.0, -2.0];
+            // Colors for extensions
+            const extensionColors = {
+                '-0.5': '#d1d5db',   // light grey
+                '-1.0': '#9ca3af',    // medium grey
+                '-2.0': '#6b7280'     // dark grey
+            };
 
             // Binance endpoints
             const PRICE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
@@ -787,7 +798,7 @@
                 fibSeriesArray = [];
             }
 
-            // Get color for fib level
+            // Get color for standard fib level
             function getFibColor(level) {
                 if (level === 0.618) return '#ef4444'; // red
                 if (level === 0.5) return '#f97316';   // orange
@@ -795,11 +806,14 @@
                 return '#a78bfa'; // default purple for 0, 0.786, 1
             }
 
-            // Draw Fibonacci levels from signalPrice (0%) to oppositePrice (100%)
-            function drawFibLines(signalPrice, oppositePrice, signalTime, lastTime) {
-                if (!settings.showFib) return;
+            // Draw all Fibonacci lines (standard levels + fixed extensions)
+            function drawAllFibLines(activeFib, lastTime) {
+                if (!settings.showFib || !activeFib) return;
                 removeFibSeries();
 
+                const { signalPrice, oppositePrice, fixedExtensions, signalTime } = activeFib;
+
+                // Draw standard levels (0 to 1) using current signalPrice (dynamic)
                 fibLevels.forEach((level) => {
                     const price = signalPrice + level * (oppositePrice - signalPrice);
                     const color = getFibColor(level);
@@ -810,6 +824,25 @@
                         priceLineVisible: false,
                         lastValueVisible: false,
                         title: `Fib ${level}`,
+                    });
+                    series.setData([
+                        { time: signalTime, value: price },
+                        { time: lastTime, value: price }
+                    ]);
+                    fibSeriesArray.push(series);
+                });
+
+                // Draw fixed extension levels (using original signalPrice when they were calculated)
+                extensionLevels.forEach((ext) => {
+                    const price = fixedExtensions[ext];
+                    const color = extensionColors[ext.toString()];
+                    const series = chart.addLineSeries({
+                        color: color,
+                        lineWidth: 1,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                        title: `Fib ${ext*100}%`,
                     });
                     series.setData([
                         { time: signalTime, value: price },
@@ -856,28 +889,37 @@
                 if (oppositeIdx === -1) return;
 
                 const oppositeCandle = candleData[oppositeIdx];
-                let signalPrice, oppositePrice;
+                let initialSignalPrice, oppositePrice;
                 if (isBuy) {
                     // Buy: signal level = high of signal candle, opposite = low of bearish candle
-                    signalPrice = signalCandle.high;
+                    initialSignalPrice = signalCandle.high;
                     oppositePrice = oppositeCandle.low;
                 } else {
                     // Sell: signal level = low of signal candle, opposite = high of bullish candle
-                    signalPrice = signalCandle.low;
+                    initialSignalPrice = signalCandle.low;
                     oppositePrice = oppositeCandle.high;
                 }
 
+                // Compute fixed extension levels based on initial signalPrice and oppositePrice
+                const range = oppositePrice - initialSignalPrice; // may be negative
+                const fixedExtensions = {
+                    '-0.5': initialSignalPrice - 0.5 * range,
+                    '-1.0': initialSignalPrice - 1.0 * range,
+                    '-2.0': initialSignalPrice - 2.0 * range
+                };
+
                 activeFib = {
                     type: isBuy ? 'buy' : 'sell',
-                    signalPrice: signalPrice,
+                    signalPrice: initialSignalPrice,
                     oppositePrice: oppositePrice,
+                    fixedExtensions: fixedExtensions,
                     signalTime: signalCandle.time,
                     stuck: false
                 };
 
-                // Draw initial fib extending to the last candle
+                // Draw all fib lines extending to the last candle
                 const lastTime = candleData[candleData.length-1].time;
-                drawFibLines(signalPrice, oppositePrice, signalCandle.time, lastTime);
+                drawAllFibLines(activeFib, lastTime);
                 updateFibStatus();
             }
 
@@ -889,19 +931,18 @@
                 const lastTime = candleData[candleData.length-1].time;
 
                 if (activeFib.stuck) {
-                    drawFibLines(activeFib.signalPrice, activeFib.oppositePrice, activeFib.signalTime, lastTime);
+                    drawAllFibLines(activeFib, lastTime);
                     updateFibStatus();
                     return;
                 }
 
                 const { type, signalPrice, oppositePrice, signalTime } = activeFib;
                 const startIdx = candleData.findIndex(d => d.time === signalTime);
-                if (startIdx === -1) return; // shouldn't happen
+                if (startIdx === -1) return;
 
-                // Calculate new signal price based on candles after the signal (including the signal candle itself? we already have its price as initial)
+                // Calculate new signal price based on candles from signal candle onward
                 let newSignalPrice = signalPrice;
                 if (type === 'buy') {
-                    // Look for higher highs from signal candle onwards
                     for (let i = startIdx; i < candleData.length; i++) {
                         if (candleData[i].high > newSignalPrice) {
                             newSignalPrice = candleData[i].high;
@@ -913,7 +954,6 @@
                         activeFib.stuck = true;
                     }
                 } else { // sell
-                    // Look for lower lows from signal candle onwards
                     for (let i = startIdx; i < candleData.length; i++) {
                         if (candleData[i].low < newSignalPrice) {
                             newSignalPrice = candleData[i].low;
@@ -929,8 +969,8 @@
                     activeFib.signalPrice = newSignalPrice;
                 }
 
-                // Redraw with updated signalPrice, extending to lastTime
-                drawFibLines(activeFib.signalPrice, activeFib.oppositePrice, signalTime, lastTime);
+                // Redraw all lines (fixed extensions use original fixedExtensions, not updated)
+                drawAllFibLines(activeFib, lastTime);
                 updateFibStatus();
             }
 
