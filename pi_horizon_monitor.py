@@ -7,24 +7,85 @@ live, over a historical window, or aggregated into payout "waves".
 Requires: PyQt6, requests
 """
 
+import os
 import re
 import struct
 import sys
 import threading
+import traceback
 from base64 import b32decode
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-import requests
+ERROR_LOG_NAME = "pi_monitor_error.log"
 
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
-from PyQt6.QtWidgets import (
-    QApplication, QHeaderView, QLabel, QLineEdit, QMainWindow,
-    QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
-    QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QDoubleSpinBox,
-    QSpinBox, QGroupBox, QProgressBar, QSystemTrayIcon, QStyle
-)
+
+def _pause_if_console():
+    """Hold a double-clicked console window open long enough to be read."""
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("\nPress Enter to close this window...")
+    except (EOFError, KeyboardInterrupt, OSError):
+        pass
+
+
+def _write_error_log(text):
+    """Save a failure next to the script. Returns the path, or None."""
+    try:
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), ERROR_LOG_NAME
+        )
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+    except OSError:
+        return None
+
+
+def _fatal(headline, detail=None):
+    """Report a startup failure and exit.
+
+    Without this the window closes before the traceback can be read, which
+    makes a missing dependency look like the program doing nothing at all.
+    """
+    text = f"{headline}\n\n{detail or traceback.format_exc()}"
+    sys.stderr.write("\n" + text + "\n")
+    path = _write_error_log(text)
+    if path:
+        sys.stderr.write(f"\nThis message was also saved to:\n  {path}\n")
+    _pause_if_console()
+    raise SystemExit(1)
+
+
+try:
+    import requests
+except ImportError:
+    _fatal(
+        "The 'requests' package is missing.\n"
+        f"Python in use: {sys.executable}\n\n"
+        "Install it for THIS Python by running:\n"
+        f'  "{sys.executable}" -m pip install requests'
+    )
+
+try:
+    from PyQt6.QtCore import QThread, pyqtSignal, Qt
+    from PyQt6.QtWidgets import (
+        QApplication, QHeaderView, QLabel, QLineEdit, QMainWindow,
+        QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
+        QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QDoubleSpinBox,
+        QSpinBox, QGroupBox, QProgressBar, QSystemTrayIcon, QStyle
+    )
+except ImportError:
+    _fatal(
+        "PyQt6 could not be loaded by this Python installation.\n"
+        f"Python in use: {sys.executable}\n\n"
+        "Install it for THIS Python by running:\n"
+        f'  "{sys.executable}" -m pip install PyQt6\n\n'
+        "If you have already installed PyQt6, it went to a different Python "
+        "than the one opening this file. Running the command above puts it "
+        "where this file can find it."
+    )
 
 DEFAULT_WALLET = "GABT7EMPGNCQSZM22DIYC4FNKHUVJTXITUF6Y5HNIWPU4GA7BHT4GC5G"
 
@@ -1349,9 +1410,47 @@ class PiScannerUI(QMainWindow):
         event.accept()
 
 
+def _report_runtime_failure(headline, detail=None):
+    """Surface a failure that happens once Qt is up, in a dialog as well as
+    the console, since a windowed app may have no console to print to."""
+    text = f"{headline}\n\n{detail or traceback.format_exc()}"
+    sys.stderr.write("\n" + text + "\n")
+    path = _write_error_log(text)
+    try:
+        if QApplication.instance() is not None:
+            QMessageBox.critical(
+                None,
+                "Pi Horizon Monitor - error",
+                text + (f"\n\nSaved to:\n{path}" if path else ""),
+            )
+    except Exception:
+        pass  # never let the error reporter raise over the original error
+    return path
+
+
+def _install_excepthook():
+    def hook(exc_type, exc_value, exc_tb):
+        _report_runtime_failure(
+            "The monitor hit an unexpected error.",
+            "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
+        )
+
+    sys.excepthook = hook
+
+
+def main():
+    _install_excepthook()
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("Pi Network Advanced Horizon Monitor")
+        window = PiScannerUI()
+        window.show()
+    except Exception:
+        _report_runtime_failure("The monitor could not start.")
+        _pause_if_console()
+        return 1
+    return app.exec()
+
+
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    app.setApplicationName("Pi Network Advanced Horizon Monitor")
-    window = PiScannerUI()
-    window.show()
-    sys.exit(app.exec())
+    sys.exit(main())
