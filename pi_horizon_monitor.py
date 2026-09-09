@@ -102,6 +102,7 @@ HORIZON_PAGE_LIMIT = 100
 LIVE_MAX_PAGES = 3          # enough to see past a 100-operation wave
 HISTORICAL_MAX_PAGES = 100
 ANALYTICS_MAX_PAGES = 50
+CLAIMABLE_MAX_PAGES = 50
 
 MAX_TABLE_ROWS = 2000       # keeps a multi-day live session from growing forever
 MAX_LOG_LINES = 500
@@ -187,7 +188,21 @@ def operations_url(wallet):
     )
 
 
-def pick_claimant(claimants, wallet):
+def claimable_balances_url(wallet):
+    """Outstanding balances sponsored by this wallet.
+
+    Horizon deletes a claimable balance entry once it is claimed, so this
+    collection is exactly the Pi that has left the wallet and not yet been
+    taken.
+    """
+    return (
+        f"{HORIZON_BASE}/claimable_balances"
+        f"?sponsor={quote(wallet, safe='')}"
+        f"&limit={HORIZON_PAGE_LIMIT}&order=desc"
+    )
+
+
+def pick_claimant_entry(claimants, wallet):
     """Choose the recipient from a claimable balance's claimants.
 
     A migration balance names two parties: the recipient, who may claim
@@ -200,11 +215,87 @@ def pick_claimant(claimants, wallet):
         if claimant.get("destination") and claimant.get("destination") != wallet
     ]
     if not candidates:
-        return ""
+        return None
     for claimant in candidates:
         if "not" not in (claimant.get("predicate") or {}):
-            return str(claimant["destination"])
-    return str(candidates[0]["destination"])
+            return claimant
+    return candidates[0]
+
+
+def pick_claimant(claimants, wallet):
+    """The recipient's address, or "" when none can be determined."""
+    entry = pick_claimant_entry(claimants, wallet)
+    return str(entry["destination"]) if entry else ""
+
+
+def claim_deadline(predicate, created_at=None):
+    """The moment after which this claimant can no longer claim, or None.
+
+    Horizon rewrites a relative predicate to an absolute one when the ledger
+    entry is created, so `abs_before` is the usual shape; `rel_before` still
+    appears on the operation that created the balance. Anything else
+    (unconditional, and/or combinations) returns None rather than a guess.
+    """
+    if not isinstance(predicate, dict) or not predicate:
+        return None
+    if predicate.get("abs_before"):
+        return parse_horizon_time(predicate["abs_before"])
+    if predicate.get("abs_before_epoch") is not None:
+        try:
+            return datetime.fromtimestamp(
+                int(predicate["abs_before_epoch"]), timezone.utc
+            )
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+    if predicate.get("rel_before") is not None and created_at is not None:
+        try:
+            return created_at + timedelta(seconds=int(predicate["rel_before"]))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
+
+
+def extract_claimable_balance(record, wallet):
+    """Parse an outstanding claimable balance into a display dictionary."""
+    if record.get("asset") != "native":
+        return None
+
+    amount = safe_float(record.get("amount"), default=None)
+    if amount is None or amount <= 0:
+        return None
+
+    sponsor = record.get("sponsor")
+    if sponsor and sponsor != wallet:
+        return None
+
+    created_at = parse_horizon_time(record.get("last_modified_time"))
+    entry = pick_claimant_entry(record.get("claimants"), wallet)
+    claimant = str(entry["destination"]) if entry else ""
+    deadline = claim_deadline(
+        (entry or {}).get("predicate"), created_at
+    ) if entry else None
+
+    if deadline is None:
+        status = "No deadline"
+    elif deadline > datetime.now(timezone.utc):
+        status = "Claimable"
+    else:
+        status = "Window passed"
+
+    return {
+        "id": str(record.get("id") or ""),
+        "amount": f"{amount:,.2f}",
+        "raw_amount": amount,
+        "claimant": claimant or "Unreadable",
+        "claimant_known": bool(claimant),
+        "deadline": deadline,
+        "deadline_text": (deadline.strftime("%Y-%m-%d %H:%M:%S")
+                          if deadline else "-"),
+        "status": status,
+        "created": created_at,
+        "created_text": (created_at.strftime("%Y-%m-%d %H:%M:%S")
+                         if created_at else "-"),
+    }
 
 
 def extract_payout(record, wallet, min_amount=0.0):
@@ -387,7 +478,7 @@ class BaseWorker(QThread):
         print(f"{type(self).__name__} failed: {type(exc).__name__}: {exc}",
               file=sys.stderr)
 
-    def iter_operation_pages(self, url, max_pages):
+    def iter_pages(self, url, max_pages):
         """Yield (page_number, records) for a Horizon operations feed.
 
         Network/JSON errors propagate to the caller so each worker can report
@@ -526,7 +617,7 @@ class HistoricalWorker(BaseWorker):
         )
 
         try:
-            pages = self.iter_operation_pages(
+            pages = self.iter_pages(
                 operations_url(self.wallet), HISTORICAL_MAX_PAGES
             )
             for page, records in pages:
@@ -618,7 +709,7 @@ class LiveMonitorWorker(BaseWorker):
         all_payouts = []
         wave = []
         try:
-            pages = self.iter_operation_pages(
+            pages = self.iter_pages(
                 operations_url(self.wallet), LIVE_MAX_PAGES
             )
             for _, records in pages:
@@ -733,6 +824,91 @@ class LiveMonitorWorker(BaseWorker):
         )
 
 
+class ClaimableBalanceWorker(BaseWorker):
+    """Lists the Pi this wallet has sent that nobody has claimed yet."""
+
+    balance_found = pyqtSignal(dict)
+    log_message = pyqtSignal(str)
+    progress_update = pyqtSignal(int)
+    summary_ready = pyqtSignal(dict)
+
+    def __init__(self, wallet, parent=None):
+        super().__init__(parent)
+        self.wallet = wallet.strip()
+        self.max_pages = CLAIMABLE_MAX_PAGES
+
+    def report_unexpected(self, exc):
+        self.log_message.emit(f"Lookup failed: {type(exc).__name__}: {exc}")
+        self.progress_update.emit(0)
+
+    def work(self):
+        total = 0.0
+        count = 0
+        claimants = set()
+        unreadable = 0
+        expired_vol = 0.0
+        expired_count = 0
+        oldest = None
+        pages_read = 0
+
+        self.log_message.emit("Reading unclaimed balances sponsored by this wallet...")
+        try:
+            for page, records in self.iter_pages(
+                    claimable_balances_url(self.wallet), self.max_pages):
+                pages_read = page
+                self.progress_update.emit(min(99, int(page / self.max_pages * 100)))
+                if not records:
+                    break
+
+                for record in records:
+                    if self.stopping:
+                        return
+                    item = extract_claimable_balance(record, self.wallet)
+                    if not item:
+                        continue
+                    count += 1
+                    total += item["raw_amount"]
+                    if item["claimant_known"]:
+                        claimants.add(item["claimant"])
+                    else:
+                        unreadable += 1
+                    if item["status"] == "Window passed":
+                        expired_vol += item["raw_amount"]
+                        expired_count += 1
+                    if item["created"] and (oldest is None or item["created"] < oldest):
+                        oldest = item["created"]
+                    self.balance_found.emit(item)
+
+                self.log_message.emit(
+                    f"Page {page}: {count} unclaimed balances so far, "
+                    f"{total:,.2f} Pi."
+                )
+        except (requests.RequestException, ValueError) as exc:
+            self.log_message.emit(f"API Error: {exc}")
+
+        if self.stopping:
+            return
+
+        if pages_read >= self.max_pages:
+            self.log_message.emit(
+                f"Stopped at the {self.max_pages}-page cap; there may be more."
+            )
+
+        self.progress_update.emit(100)
+        self.summary_ready.emit({
+            "count": count,
+            "total": total,
+            "claimants": len(claimants),
+            "unreadable": unreadable,
+            "expired_vol": expired_vol,
+            "expired_count": expired_count,
+            "oldest": oldest.strftime("%Y-%m-%d %H:%M:%S") if oldest else "-",
+        })
+        self.log_message.emit(
+            f"Done: {count} unclaimed balances holding {total:,.2f} Pi."
+        )
+
+
 class AnalyticsWorker(BaseWorker):
     log_message = pyqtSignal(str)
     cycles_found = pyqtSignal(list, dict)
@@ -757,7 +933,7 @@ class AnalyticsWorker(BaseWorker):
 
         self.log_message.emit("Initiating deep scan for cycle analysis...")
         try:
-            pages = self.iter_operation_pages(
+            pages = self.iter_pages(
                 operations_url(self.wallet), self.max_pages
             )
             for page, records in pages:
@@ -859,10 +1035,12 @@ class PiScannerUI(QMainWindow):
         super().__init__()
         self.hist_data = []
         self.live_data = []
+        self.claimable_data = []
         self.current_pi_price = 0.0
         self.hist_worker = None
         self.live_worker = None
         self.analytics_worker = None
+        self.claimable_worker = None
         self.price_worker = None
         self.ledger_worker = None
         self.live_settings = LiveSettings()
@@ -1002,6 +1180,10 @@ class PiScannerUI(QMainWindow):
         self.setup_hist_tab()
         self.tabs.addTab(self.tab_hist, "⏪ Historical Scan (10 Days)")
 
+        self.tab_claimable = QWidget()
+        self.setup_claimable_tab()
+        self.tabs.addTab(self.tab_claimable, "🔒 Unclaimed")
+
         self.tab_analytics = QWidget()
         self.setup_analytics_tab()
         self.tabs.addTab(self.tab_analytics, "📊 Cycle Analytics")
@@ -1075,6 +1257,61 @@ class PiScannerUI(QMainWindow):
         layout.addWidget(QLabel("Historical Logs:"))
         layout.addWidget(self.log_hist)
         self.tab_hist.setLayout(layout)
+
+    def setup_claimable_tab(self):
+        layout = QVBoxLayout()
+
+        top_bar = QHBoxLayout()
+        self.btn_claimable_start = QPushButton("Load Unclaimed Balances")
+        self.btn_claimable_start.clicked.connect(self.start_claimable)
+        top_bar.addWidget(self.btn_claimable_start)
+        self.progress_claimable = QProgressBar()
+        self.progress_claimable.setValue(0)
+        top_bar.addWidget(self.progress_claimable)
+        layout.addLayout(top_bar)
+
+        explain = QLabel(
+            "Pi sent as a claimable balance leaves this wallet immediately but "
+            "sits in its own ledger entry until someone claims it. Horizon "
+            "deletes the entry once claimed, so everything below is still "
+            "outstanding."
+        )
+        explain.setWordWrap(True)
+        explain.setStyleSheet("color: #7f8c8d;")
+        layout.addWidget(explain)
+
+        stats = QHBoxLayout()
+        self.lbl_claim_total = QLabel("<b>Total Unclaimed:</b> N/A")
+        self.lbl_claim_total.setStyleSheet(
+            "color: #f39c12; font-weight: bold; font-size: 14px; "
+            "background-color: #2c3e50; padding: 4px 10px; border-radius: 4px;"
+        )
+        self.lbl_claim_count = QLabel("<b>Balances:</b> N/A")
+        self.lbl_claim_claimants = QLabel("<b>Distinct Claimants:</b> N/A")
+        self.lbl_claim_expired = QLabel("<b>Window Passed:</b> N/A")
+        self.lbl_claim_oldest = QLabel("<b>Oldest:</b> N/A")
+        for widget in (self.lbl_claim_total, self.lbl_claim_count,
+                       self.lbl_claim_claimants, self.lbl_claim_expired,
+                       self.lbl_claim_oldest):
+            stats.addWidget(widget)
+        stats.addStretch()
+        layout.addLayout(stats)
+
+        self.table_claimable = QTableWidget(0, 5)
+        self.table_claimable.setHorizontalHeaderLabels([
+            "Amount (Pi & USD)", "Claimant", "Claimable Until (UTC)",
+            "Status", "Balance ID"
+        ])
+        self.table_claimable.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.table_claimable)
+
+        self.log_claimable = self.create_log_box(80)
+        layout.addWidget(QLabel("Unclaimed Logs:"))
+        layout.addWidget(self.log_claimable)
+
+        self.tab_claimable.setLayout(layout)
 
     def setup_analytics_tab(self):
         layout = QVBoxLayout()
@@ -1321,6 +1558,84 @@ class PiScannerUI(QMainWindow):
     def update_last_ping(self, time_str):
         self.lbl_last_ping.setText(f"<b>Last API Read:</b> {time_str}")
 
+    # --- UNCLAIMED ACTIONS ---
+    def start_claimable(self):
+        if self.claimable_worker and self.claimable_worker.isRunning():
+            return
+        wallet = self.resolved_wallet(self.log_claimable)
+        if wallet is None:
+            return
+
+        self.table_claimable.setRowCount(0)
+        self.claimable_data.clear()
+        self.btn_claimable_start.setEnabled(False)
+        self.log_claimable.clear()
+        self.progress_claimable.setValue(0)
+        for label, text in ((self.lbl_claim_total, "<b>Total Unclaimed:</b> Reading..."),
+                            (self.lbl_claim_count, "<b>Balances:</b> ..."),
+                            (self.lbl_claim_claimants, "<b>Distinct Claimants:</b> ..."),
+                            (self.lbl_claim_expired, "<b>Window Passed:</b> ..."),
+                            (self.lbl_claim_oldest, "<b>Oldest:</b> ...")):
+            label.setText(text)
+
+        self.claimable_worker = ClaimableBalanceWorker(wallet)
+        self.claimable_worker.balance_found.connect(self.add_claimable_row)
+        self.claimable_worker.log_message.connect(self.log_claimable.append)
+        self.claimable_worker.progress_update.connect(self.progress_claimable.setValue)
+        self.claimable_worker.summary_ready.connect(self.show_claimable_summary)
+        self.claimable_worker.finished.connect(
+            lambda: self.btn_claimable_start.setEnabled(True)
+        )
+        self.claimable_worker.start()
+
+    def add_claimable_row(self, item):
+        self.claimable_data.append(item)
+        row = self.table_claimable.rowCount()
+        if row >= MAX_TABLE_ROWS:
+            return
+        self.table_claimable.insertRow(row)
+
+        fiat = (f" (${item['raw_amount'] * self.current_pi_price:,.2f})"
+                if self.current_pi_price > 0 else "")
+        claimant_item = QTableWidgetItem(item["claimant"])
+        claimant_item.setToolTip(item["claimant"])
+        id_item = QTableWidgetItem(
+            f"{item['id'][:12]}..." if len(item["id"]) > 12 else item["id"]
+        )
+        id_item.setToolTip(item["id"])
+        status_item = QTableWidgetItem(item["status"])
+        status_item.setToolTip(f"Created {item['created_text']} UTC")
+
+        self.table_claimable.setItem(
+            row, 0, QTableWidgetItem(f"{item['amount']} Pi{fiat}")
+        )
+        self.table_claimable.setItem(row, 1, claimant_item)
+        self.table_claimable.setItem(row, 2, QTableWidgetItem(item["deadline_text"]))
+        self.table_claimable.setItem(row, 3, status_item)
+        self.table_claimable.setItem(row, 4, id_item)
+
+    def show_claimable_summary(self, stats):
+        total = stats["total"]
+        fiat = (f" (${total * self.current_pi_price:,.2f})"
+                if self.current_pi_price > 0 else "")
+        self.lbl_claim_total.setText(f"<b>Total Unclaimed:</b> {total:,.2f} Pi{fiat}")
+        self.lbl_claim_count.setText(f"<b>Balances:</b> {stats['count']:,}")
+        unreadable = (f" ({stats['unreadable']} unreadable)"
+                      if stats["unreadable"] else "")
+        self.lbl_claim_claimants.setText(
+            f"<b>Distinct Claimants:</b> {stats['claimants']:,}{unreadable}"
+        )
+        self.lbl_claim_expired.setText(
+            f"<b>Window Passed:</b> {stats['expired_count']:,} "
+            f"({stats['expired_vol']:,.2f} Pi)"
+        )
+        self.lbl_claim_oldest.setText(f"<b>Oldest:</b> {stats['oldest']}")
+        if stats["count"] >= MAX_TABLE_ROWS:
+            self.log_claimable.append(
+                f"Table shows the first {MAX_TABLE_ROWS:,} rows; "
+                f"the totals above cover all {stats['count']:,}."
+            )
+
     # --- ANALYTICS ACTIONS ---
     def start_analytics(self):
         if self.analytics_worker and self.analytics_worker.isRunning():
@@ -1384,7 +1699,8 @@ class PiScannerUI(QMainWindow):
 
     def closeEvent(self, event):
         for worker in (self.price_worker, self.ledger_worker, self.live_worker,
-                       self.hist_worker, self.analytics_worker):
+                       self.hist_worker, self.analytics_worker,
+                       self.claimable_worker):
             self.shutdown_worker(worker)
         self.tray_icon.hide()
         event.accept()
