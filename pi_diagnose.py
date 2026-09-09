@@ -89,23 +89,27 @@ def reject_reason(record, wallet):
     reasons reported here are the reasons the dashboard actually applies.
     """
     op_type = record.get("type")
-    if op_type not in ("payment", "create_claimable_balance"):
+    if op_type not in mon.PAYOUT_OP_TYPES:
         return f"operation type is '{op_type}', not a payout"
     if record.get("transaction_successful") is False:
         return "transaction failed"
-    if not mon.is_native_amount(record):
+    if op_type != "create_account" and not mon.is_native_amount(record):
         asset = record.get("asset_type") or record.get("asset") or "(no asset field)"
         return f"asset is '{asset}', not native Pi"
     if mon.parse_horizon_time(record.get("created_at")) is None:
         return f"unreadable created_at: {record.get('created_at')!r}"
-    amount = mon.safe_float(record.get("amount"), default=None)
+    field = "starting_balance" if op_type == "create_account" else "amount"
+    amount = mon.safe_float(record.get(field), default=None)
     if amount is None:
-        return f"unreadable amount: {record.get('amount')!r}"
+        return f"unreadable {field}: {record.get(field)!r}"
     if amount <= 0:
-        return "amount is zero or negative"
+        return f"{field} is zero or negative"
     if op_type == "payment":
         if record.get("from") != wallet:
             return "payment was not sent by this wallet"
+    elif op_type == "create_account":
+        if (record.get("funder") or record.get("source_account")) != wallet:
+            return "account was not funded by this wallet"
     else:
         sponsor = record.get("sponsor") or record.get("source_account")
         if sponsor != wallet:
@@ -168,6 +172,24 @@ def analyse(records, wallet, out):
             for r in records).most_common():
         say(f"  {count:5d}  {asset}")
     say()
+
+    balances = [r for r in records if r.get("type") == "create_claimable_balance"]
+    if balances:
+        say("-- Claimable balance shape --")
+        say(f"  Claimants per balance: "
+            f"{dict(Counter(len(r.get('claimants') or []) for r in balances))}")
+        chosen = Counter(mon.pick_claimant(r.get("claimants"), wallet)
+                         for r in balances)
+        say(f"  Distinct chosen recipients: {len(chosen)}")
+        for target, count in chosen.most_common(5):
+            say(f"      x{count:<5d} {target or '(none readable)'}")
+        first_seen = balances[0].get("claimants") or []
+        if len(first_seen) > 1:
+            say("  Predicates on the first balance:")
+            for claimant in first_seen:
+                say(f"      {json.dumps(claimant.get('predicate'))}"
+                    f"  ->  {claimant.get('destination')}")
+        say()
 
     accepted, rejected = [], Counter()
     for record in records:

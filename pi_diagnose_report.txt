@@ -1,0 +1,87 @@
+====================================================================
+PI HORIZON DIAGNOSTIC
+====================================================================
+Wallet:        GABT7EMPGNCQSZM22DIYC4FNKHUVJTXITUF6Y5HNIWPU4GA7BHT4GC5G
+Valid address: True
+Records read:  300
+
+-- Operation types --
+    255  create_claimable_balance
+     35  create_account
+     10  payment
+
+-- Asset field --
+    265  native
+     35  (missing)
+
+-- Claimable balance shape --
+  Claimants per balance: {2: 255}
+  Distinct chosen recipients: 1
+      x255   GC5RNDCRO6DDM7NZDEMW3RIN5K6AHN6GMWSZ5SAH2TRJLVGQMB2I3BNJ
+  Predicates on the first balance:
+      {"rel_before": "1209600"}  ->  GC5RNDCRO6DDM7NZDEMW3RIN5K6AHN6GMWSZ5SAH2TRJLVGQMB2I3BNJ
+      {"not": {"rel_before": "2419200"}}  ->  GC6N7OHVFSEZMZAO7RSTMVYZFN4GKTIACRHQX65WM4AG5ONTZOBHNFOK
+
+-- What the monitor keeps --
+  Counted as payouts: 300
+  Ignored:            0
+
+-- Recipients --
+  Distinct identified recipients: 46
+  Payouts with no readable recipient: 0 (0.00 Pi)
+  Total volume across all payouts: 111,781.26 Pi
+
+  Top recipients by total:
+            111,746.06 Pi  x255   100.0%  GC5RNDCRO6DDM7NZDEMW3RIN5K6AHN6GMWSZ5SAH2TRJLVGQMB2I3BNJ
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000000
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000001
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000002
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000003
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000004
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000005
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000006
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000007
+                  1.00 Pi  x1       0.0%  GNEWACCT000000000000000000000000000000000000000000000008
+
+-- What the dashboard would show on the first check --
+  Wave Vol:              111,781.26 Pi  (300 payouts)
+  Total Session Vol:     111,781.26 Pi
+  Highest Account Total: 111,746.06 Pi  -> GC5RNDCRO6DD
+  Wave boundary found within the records read: False
+
+  The 60-minute gap that ends a wave was not found, so the whole
+  window counts as one wave. That is why Wave Vol and Session
+  Vol agree at the start.
+
+-- Time span --
+  Newest: 2026-09-09 11:32:46 UTC
+  Oldest: 2026-09-09 08:05:20 UTC
+
+-- One raw record for reference --
+{
+  "id": "122965008173764610",
+  "transaction_successful": true,
+  "source_account": "GABT7EMPGNCQSZM22DIYC4FNKHUVJTXITUF6Y5HNIWPU4GA7BHT4GC5G",
+  "type": "create_claimable_balance",
+  "created_at": "2026-09-09T11:32:46Z",
+  "transaction_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sponsor": "GABT7EMPGNCQSZM22DIYC4FNKHUVJTXITUF6Y5HNIWPU4GA7BHT4GC5G",
+  "asset": "native",
+  "amount": "298.2111607",
+  "claimants": [
+    {
+      "destination": "GC5RNDCRO6DDM7NZDEMW3RIN5K6AHN6GMWSZ5SAH2TRJLVGQMB2I3BNJ",
+      "predicate": {
+        "rel_before": "1209600"
+      }
+    },
+    {
+      "destination": "GC6N7OHVFSEZMZAO7RSTMVYZFN4GKTIACRHQX65WM4AG5ONTZOBHNFOK",
+      "predicate": {
+        "not": {
+          "rel_before": "2419200"
+        }
+      }
+    }
+  ]
+}

@@ -110,6 +110,9 @@ SHUTDOWN_TIMEOUT_MS = 4000
 
 WALLET_RE = re.compile(r"^G[A-Z2-7]{55}$")
 
+# Every operation type that moves Pi out of the watched wallet.
+PAYOUT_OP_TYPES = ("payment", "create_claimable_balance", "create_account")
+
 
 # ==========================================
 # HELPERS
@@ -184,16 +187,37 @@ def operations_url(wallet):
     )
 
 
+def pick_claimant(claimants, wallet):
+    """Choose the recipient from a claimable balance's claimants.
+
+    A migration balance names two parties: the recipient, who may claim
+    before a deadline, and the sponsor's reclaim account, which may claim
+    only after one. The reclaim side carries a negated predicate, so prefer
+    a claimant without one rather than trusting list order.
+    """
+    candidates = [
+        claimant for claimant in (claimants or [])
+        if claimant.get("destination") and claimant.get("destination") != wallet
+    ]
+    if not candidates:
+        return ""
+    for claimant in candidates:
+        if "not" not in (claimant.get("predicate") or {}):
+            return str(claimant["destination"])
+    return str(candidates[0]["destination"])
+
+
 def extract_payout(record, wallet, min_amount=0.0):
     """Parse a Horizon operation record into a standardized dictionary."""
     op_type = record.get("type")
-    if op_type not in ("payment", "create_claimable_balance"):
+    if op_type not in PAYOUT_OP_TYPES:
         return None
 
     # Failed transactions are excluded by Horizon by default; be explicit anyway.
     if record.get("transaction_successful") is False:
         return None
-    if not is_native_amount(record):
+    # create_account can only fund with native Pi and carries no asset field.
+    if op_type != "create_account" and not is_native_amount(record):
         return None
 
     created_at = parse_horizon_time(record.get("created_at"))
@@ -202,7 +226,8 @@ def extract_payout(record, wallet, min_amount=0.0):
 
     # A missing, unparseable or non-positive amount is not a payout; it must
     # not reach the table as a bogus 0.00 Pi row.
-    amount = safe_float(record.get("amount"), default=None)
+    amount_field = "starting_balance" if op_type == "create_account" else "amount"
+    amount = safe_float(record.get(amount_field), default=None)
     if amount is None or amount <= 0 or amount < min_amount:
         return None
 
@@ -215,17 +240,21 @@ def extract_payout(record, wallet, min_amount=0.0):
         payout_type = "Payment"
         destination = record.get("to")
         target = str(destination) if destination else ""
+    elif op_type == "create_account":
+        # Funding a brand new account is Pi leaving the wallet just as much
+        # as a payment is.
+        funder = record.get("funder") or record.get("source_account")
+        if funder != wallet:
+            return None
+        payout_type = "Account Fund"
+        destination = record.get("account")
+        target = str(destination) if destination else ""
     else:
         sponsor = record.get("sponsor") or record.get("source_account")
         if sponsor != wallet:
             return None
         payout_type = "Claimable Bal"
-        target = ""
-        for claimant in record.get("claimants") or []:
-            destination = claimant.get("destination")
-            if destination and destination != wallet:
-                target = str(destination)
-                break
+        target = pick_claimant(record.get("claimants"), wallet)
 
     target_known = bool(target)
     if not target_known:
@@ -281,10 +310,11 @@ class LiveSettings:
     values in here and the worker reads a snapshot.
     """
 
-    def __init__(self, min_amount=0.0, ping_interval=180):
+    def __init__(self, min_amount=0.0, ping_interval=180, wave_gap_mins=60):
         self._lock = threading.Lock()
         self._min_amount = float(min_amount)
         self._ping_interval = int(ping_interval)
+        self._wave_gap_mins = int(wave_gap_mins)
 
     def set_min_amount(self, value):
         with self._lock:
@@ -294,9 +324,13 @@ class LiveSettings:
         with self._lock:
             self._ping_interval = max(1, int(value))
 
+    def set_wave_gap_mins(self, value):
+        with self._lock:
+            self._wave_gap_mins = max(1, int(value))
+
     def snapshot(self):
         with self._lock:
-            return self._min_amount, self._ping_interval
+            return self._min_amount, self._ping_interval, self._wave_gap_mins
 
 
 # ==========================================
@@ -547,11 +581,10 @@ class LiveMonitorWorker(BaseWorker):
 
     MAX_RANKED_RECIPIENTS = 500
 
-    def __init__(self, wallet, settings, wave_gap_mins=60, parent=None):
+    def __init__(self, wallet, settings, parent=None):
         super().__init__(parent)
         self.wallet = wallet.strip()
         self.settings = settings
-        self.wave_gap_mins = wave_gap_mins
         self.emitted_ids = BoundedIdSet()   # already listed in the table
         self.counted_ids = BoundedIdSet()   # already added to the session totals
         self.session_total_vol = 0.0
@@ -580,11 +613,11 @@ class LiveMonitorWorker(BaseWorker):
                 self.log_message.emit(f"Cycle error: {type(exc).__name__}: {exc}")
             if self.stopping:
                 break
-            _, ping_interval = self.settings.snapshot()
+            _, ping_interval, _ = self.settings.snapshot()
             self._force_ping.wait(ping_interval)
             self._force_ping.clear()
 
-    def _fetch_wave(self):
+    def _fetch_wave(self, wave_gap_mins):
         """Fetch enough pages to cover the current wave. Returns (wave, ok)."""
         all_payouts = []
         wave = []
@@ -600,7 +633,7 @@ class LiveMonitorWorker(BaseWorker):
                         all_payouts.append(item)
 
                 all_payouts.sort(key=lambda p: p["dt"], reverse=True)
-                wave, boundary_found = wave_slice(all_payouts, self.wave_gap_mins)
+                wave, boundary_found = wave_slice(all_payouts, wave_gap_mins)
                 if boundary_found:
                     break
         except (requests.RequestException, ValueError) as exc:
@@ -687,8 +720,8 @@ class LiveMonitorWorker(BaseWorker):
         )
 
     def process_active_cycle(self):
-        current_min_amount, _ = self.settings.snapshot()
-        wave, ok = self._fetch_wave()
+        current_min_amount, _, wave_gap_mins = self.settings.snapshot()
+        wave, ok = self._fetch_wave(wave_gap_mins)
         if not ok:
             return
 
@@ -719,7 +752,7 @@ class LiveMonitorWorker(BaseWorker):
             idle_minutes = (
                 datetime.now(timezone.utc) - latest_tx_dt
             ).total_seconds() / 60.0
-            is_active = idle_minutes < self.wave_gap_mins
+            is_active = idle_minutes < wave_gap_mins
             last_time = latest_tx_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
             wave_start = wave[-1]["dt"].strftime("%Y-%m-%d %H:%M:%S UTC")
         else:
@@ -916,6 +949,17 @@ class PiScannerUI(QMainWindow):
         self.val_ping.setValue(180)
         row1.addWidget(self.val_ping)
 
+        row1.addWidget(QLabel("Wave Gap (mins):"))
+        self.val_wave_gap = QSpinBox()
+        self.val_wave_gap.setRange(1, 1440)
+        self.val_wave_gap.setValue(60)
+        self.val_wave_gap.setToolTip(
+            "How long the wallet must be idle before a new wave starts.\n"
+            "A wallet that pays out continuously never reaches a 60 minute\n"
+            "gap, so Wave Vol will equal Session Vol until this is lowered."
+        )
+        row1.addWidget(self.val_wave_gap)
+
         row1.addWidget(QLabel("Alert Threshold:"))
         self.val_alert_thresh = QDoubleSpinBox()
         self.val_alert_thresh.setDecimals(4)
@@ -928,8 +972,10 @@ class PiScannerUI(QMainWindow):
         # threads must never read a QWidget directly.
         self.live_settings.set_min_amount(self.val_amount.value())
         self.live_settings.set_ping_interval(self.val_ping.value())
+        self.live_settings.set_wave_gap_mins(self.val_wave_gap.value())
         self.val_amount.valueChanged.connect(self.live_settings.set_min_amount)
         self.val_ping.valueChanged.connect(self.live_settings.set_ping_interval)
+        self.val_wave_gap.valueChanged.connect(self.live_settings.set_wave_gap_mins)
 
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("<b>Migration Status:</b>"))
@@ -1256,6 +1302,10 @@ class PiScannerUI(QMainWindow):
         self.btn_force_ping.setEnabled(True)
 
         self.live_worker = LiveMonitorWorker(wallet, self.live_settings)
+        self.log_live.append(
+            f"Watching {wallet[:8]}... for payments, claimable balances and "
+            f"account funding."
+        )
         self.live_worker.record_found.connect(
             lambda item: self.add_tx_record(
                 item, self.table_live, self.live_data, insert_top=True
