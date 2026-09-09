@@ -69,7 +69,7 @@ except ImportError:
     )
 
 try:
-    from PyQt6.QtCore import QThread, pyqtSignal, Qt
+    from PyQt6.QtCore import QThread, QTimer, pyqtSignal, Qt
     from PyQt6.QtWidgets import (
         QApplication, QHeaderView, QLabel, QLineEdit, QMainWindow,
         QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
@@ -109,6 +109,10 @@ CLAIMABLE_MAX_PAGES = 50
 
 MAX_TABLE_ROWS = 2000       # keeps a multi-day live session from growing forever
 MAX_LOG_LINES = 500
+# Payouts kept so the table can be rebuilt when the filter changes.
+SESSION_PAYOUT_HISTORY = 20000
+# A spin box fires on every keystroke; wait for the typing to settle.
+REFILTER_DEBOUNCE_MS = 600
 MAX_TRACKED_IDS = 20000
 SHUTDOWN_TIMEOUT_MS = 4000
 
@@ -694,7 +698,11 @@ class LiveMonitorWorker(BaseWorker):
         self.largest_payout = 0.0
         self.largest_target = ""
         self._wave_cache = []
+        # Every payout seen this session, so the table can be rebuilt against
+        # a new threshold without going back to the API.
+        self._session_payouts = deque(maxlen=SESSION_PAYOUT_HISTORY)
         self._force_ping = threading.Event()
+        self._refilter = threading.Event()
         self._first_cycle = True
 
     def stop(self):
@@ -702,6 +710,15 @@ class LiveMonitorWorker(BaseWorker):
         self._force_ping.set()  # wake an in-progress interval wait
 
     def trigger_force_ping(self):
+        self._force_ping.set()
+
+    def request_refilter(self):
+        """Rebuild the listed payouts against the current Min Amount.
+
+        The rebuild runs on the worker thread on its next pass, so the
+        emitted-id set is never mutated from under a cycle in progress.
+        """
+        self._refilter.set()
         self._force_ping.set()
 
     def report_unexpected(self, exc):
@@ -785,6 +802,7 @@ class LiveMonitorWorker(BaseWorker):
             if payout["id"] in self.counted_ids:
                 continue
             self.counted_ids.add(payout["id"])
+            self._session_payouts.append(payout)
             new_count += 1
             self.session_payout_count += 1
             self.session_total_vol += payout["raw_amount"]
@@ -793,10 +811,16 @@ class LiveMonitorWorker(BaseWorker):
                 self.largest_target = payout["target"]
         return new_count
 
-    def _emit_new_records(self, wave, min_amount):
-        """List payouts at or above the threshold, oldest first."""
+    def _emit_new_records(self, payouts_oldest_first, min_amount, as_backfill):
+        """List payouts at or above the threshold.
+
+        `as_backfill` marks payouts that are not new events -- the wave
+        already in progress at startup, and anything replayed after a filter
+        change. Those must not raise alerts, and logging each one would bury
+        the real activity.
+        """
         emitted = 0
-        for payout in reversed(wave):
+        for payout in payouts_oldest_first:
             if self.stopping:
                 break
             if payout["id"] in self.emitted_ids:
@@ -804,14 +828,13 @@ class LiveMonitorWorker(BaseWorker):
             if payout["raw_amount"] < min_amount:
                 continue  # may cross the threshold later if the user lowers it
             self.emitted_ids.add(payout["id"])
-            # The first cycle backfills the wave that was already in progress;
-            # those are not new events, so they must not raise alerts.
-            payout["backfill"] = self._first_cycle
+            payout["backfill"] = as_backfill
             self.record_found.emit(payout)
             emitted += 1
-            self.log_message.emit(
-                f"⚡ [PAYOUT] {payout['amount']} Pi -> {payout['target'][:8]}..."
-            )
+            if not as_backfill:
+                self.log_message.emit(
+                    f"⚡ [PAYOUT] {payout['amount']} Pi -> {payout['target'][:8]}..."
+                )
         return emitted
 
     def process_active_cycle(self):
@@ -825,8 +848,28 @@ class LiveMonitorWorker(BaseWorker):
             return
 
         new_count = self._tally_session(wave)
-        emitted = self._emit_new_records(wave, current_min_amount)
+
+        # A filter change replays the whole session against the new
+        # threshold, so raising it drops rows and lowering it brings back
+        # ones held earlier, rather than leaving a mixture of both.
+        rebuilding = self._refilter.is_set()
+        if rebuilding:
+            self._refilter.clear()
+            self.emitted_ids = BoundedIdSet()
+            source = sorted(self._session_payouts, key=lambda p: p["dt"])
+        else:
+            source = list(reversed(wave))
+
+        emitted = self._emit_new_records(
+            source, current_min_amount, as_backfill=rebuilding or self._first_cycle
+        )
         self._first_cycle = False
+
+        if rebuilding:
+            self.log_message.emit(
+                f"Filter set to {current_min_amount:,.2f} Pi: "
+                f"{emitted} of {len(self._session_payouts)} payouts listed."
+            )
 
         wave_vol = sum(payout["raw_amount"] for payout in wave)
         at_threshold = sum(
@@ -1090,6 +1133,12 @@ class PiScannerUI(QMainWindow):
         self.ledger_worker = None
         self.live_settings = LiveSettings()
 
+        # Coalesces the spin box's per-keystroke signals into one rebuild.
+        self.refilter_timer = QTimer(self)
+        self.refilter_timer.setSingleShot(True)
+        self.refilter_timer.setInterval(REFILTER_DEBOUNCE_MS)
+        self.refilter_timer.timeout.connect(self.reload_payout_output)
+
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
@@ -1168,7 +1217,7 @@ class PiScannerUI(QMainWindow):
         self.live_settings.set_ping_interval(self.val_ping.value())
         self.live_settings.set_wave_gap_mins(self.val_wave_gap.value())
         self.live_settings.set_scan_pages(self.val_scan_pages.value())
-        self.val_amount.valueChanged.connect(self.live_settings.set_min_amount)
+        self.val_amount.valueChanged.connect(self.on_min_amount_changed)
         self.val_ping.valueChanged.connect(self.live_settings.set_ping_interval)
         self.val_wave_gap.valueChanged.connect(self.live_settings.set_wave_gap_mins)
         self.val_scan_pages.valueChanged.connect(self.live_settings.set_scan_pages)
@@ -1289,9 +1338,17 @@ class PiScannerUI(QMainWindow):
         self.btn_force_ping.setEnabled(False)
         self.btn_force_ping.clicked.connect(self.force_ping)
 
+        self.btn_clear = QPushButton("🧹 Clear && Reload")
+        self.btn_clear.setToolTip(
+            "Empty the payout table and rebuild it against the current "
+            "Min Amount."
+        )
+        self.btn_clear.clicked.connect(self.reload_payout_output)
+
         btn_layout.addWidget(self.btn_live_start)
         btn_layout.addWidget(self.btn_live_stop)
         btn_layout.addWidget(self.btn_force_ping)
+        btn_layout.addWidget(self.btn_clear)
 
         layout.addLayout(btn_layout)
 
@@ -1559,6 +1616,31 @@ class PiScannerUI(QMainWindow):
         self.btn_force_ping.setEnabled(False)
         self.log_live.append("Live Monitor Stopped.")
         self.lbl_last_ping.setText("<b>Last API Read:</b> Stopped")
+
+    def on_min_amount_changed(self, value):
+        self.live_settings.set_min_amount(value)
+        # Restarting the timer on each change means only the value the user
+        # settles on triggers a rebuild.
+        if self.live_worker and self.live_worker.isRunning():
+            self.refilter_timer.start()
+
+    def clear_payout_output(self):
+        """Empty the live payout table and the rows behind it."""
+        self.table_live.setRowCount(0)
+        self.live_data.clear()
+
+    def reload_payout_output(self):
+        """Wipe the payout table and rebuild it against the current filter."""
+        self.refilter_timer.stop()
+        self.clear_payout_output()
+        if self.live_worker and self.live_worker.isRunning():
+            self.log_live.append(
+                f"Filter now {self.val_amount.value():,.2f} Pi - "
+                f"rebuilding the payout list..."
+            )
+            self.live_worker.request_refilter()
+        else:
+            self.log_live.append("Payout table cleared.")
 
     def force_ping(self):
         if self.live_worker and self.live_worker.isRunning():
