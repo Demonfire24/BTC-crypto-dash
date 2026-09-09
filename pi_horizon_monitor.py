@@ -14,7 +14,7 @@ import sys
 import threading
 import traceback
 from base64 import b32decode
-from collections import deque
+from collections import deque, namedtuple
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -99,7 +99,10 @@ PRICE_POLL_SECONDS = 60
 LEDGER_POLL_SECONDS = 15
 
 HORIZON_PAGE_LIMIT = 100
-LIVE_MAX_PAGES = 3          # enough to see past a 100-operation wave
+# The live scan reads back until the wave ends rather than to a fixed depth;
+# this is only the runaway stop, and the user can change it.
+LIVE_SCAN_PAGES = 50
+LIVE_WAVE_MAX_PAYOUTS = 50000
 HISTORICAL_MAX_PAGES = 100
 ANALYTICS_MAX_PAGES = 50
 CLAIMABLE_MAX_PAGES = 50
@@ -394,6 +397,11 @@ class BoundedIdSet:
             self._ids.discard(self._order.popleft())
 
 
+LiveSnapshot = namedtuple(
+    "LiveSnapshot", "min_amount ping_interval wave_gap_mins scan_pages"
+)
+
+
 class LiveSettings:
     """Thread-safe mirror of the live-monitor spin boxes.
 
@@ -401,11 +409,13 @@ class LiveSettings:
     values in here and the worker reads a snapshot.
     """
 
-    def __init__(self, min_amount=0.0, ping_interval=180, wave_gap_mins=60):
+    def __init__(self, min_amount=0.0, ping_interval=180, wave_gap_mins=60,
+                 scan_pages=LIVE_SCAN_PAGES):
         self._lock = threading.Lock()
         self._min_amount = float(min_amount)
         self._ping_interval = int(ping_interval)
         self._wave_gap_mins = int(wave_gap_mins)
+        self._scan_pages = int(scan_pages)
 
     def set_min_amount(self, value):
         with self._lock:
@@ -419,9 +429,14 @@ class LiveSettings:
         with self._lock:
             self._wave_gap_mins = max(1, int(value))
 
+    def set_scan_pages(self, value):
+        with self._lock:
+            self._scan_pages = max(1, int(value))
+
     def snapshot(self):
         with self._lock:
-            return self._min_amount, self._ping_interval, self._wave_gap_mins
+            return LiveSnapshot(self._min_amount, self._ping_interval,
+                                self._wave_gap_mins, self._scan_pages)
 
 
 # ==========================================
@@ -678,6 +693,7 @@ class LiveMonitorWorker(BaseWorker):
         # Largest single payout this session, as (amount, target).
         self.largest_payout = 0.0
         self.largest_target = ""
+        self._wave_cache = []
         self._force_ping = threading.Event()
         self._first_cycle = True
 
@@ -700,34 +716,53 @@ class LiveMonitorWorker(BaseWorker):
                 self.log_message.emit(f"Cycle error: {type(exc).__name__}: {exc}")
             if self.stopping:
                 break
-            _, ping_interval, _ = self.settings.snapshot()
-            self._force_ping.wait(ping_interval)
+            self._force_ping.wait(self.settings.snapshot().ping_interval)
             self._force_ping.clear()
 
-    def _fetch_wave(self, wave_gap_mins):
-        """Fetch enough pages to cover the current wave. Returns (wave, ok)."""
-        all_payouts = []
-        wave = []
+    def _fetch_wave(self, wave_gap_mins, scan_pages):
+        """Read back through the history until the whole wave is covered.
+
+        Paging continues until a gap wider than wave_gap_mins is found, not
+        to a fixed depth, so the wave is measured in full however long it
+        runs. The payouts already fetched are kept between cycles along with
+        the first payout *past* the boundary; that one payout is what proves
+        where the wave starts, so an unchanged wave is confirmed from a
+        single page and only the first scan pays for the full depth.
+
+        Returns (wave, ok, pages_read, boundary_found).
+        """
+        pool = {payout["id"]: payout for payout in self._wave_cache}
+        ordered = sorted(pool.values(), key=lambda p: p["dt"], reverse=True)
+        wave, boundary_found = wave_slice(ordered, wave_gap_mins)
+        pages_read = 0
+
         try:
-            pages = self.iter_pages(
-                operations_url(self.wallet), LIVE_MAX_PAGES
-            )
-            for _, records in pages:
+            for page, records in self.iter_pages(
+                    operations_url(self.wallet), scan_pages):
+                pages_read = page
                 self.last_ping.emit(utc_stamp())
+
                 for record in records:
                     item = extract_payout(record, self.wallet, min_amount=0.0)
-                    if item:
-                        all_payouts.append(item)
+                    if item and item["id"] not in pool:
+                        pool[item["id"]] = item
 
-                all_payouts.sort(key=lambda p: p["dt"], reverse=True)
-                wave, boundary_found = wave_slice(all_payouts, wave_gap_mins)
+                ordered = sorted(pool.values(), key=lambda p: p["dt"],
+                                 reverse=True)
+                wave, boundary_found = wave_slice(ordered, wave_gap_mins)
                 if boundary_found:
                     break
         except (requests.RequestException, ValueError) as exc:
             self.last_ping.emit(f"{utc_stamp()} (Error)")
             self.log_message.emit(f"API Read Error: {exc}")
-            return [], False
-        return wave, True
+            return [], False, pages_read, False
+
+        # Keep the wave plus the one payout beyond it: without that sentinel
+        # the cached wave has no internal gap and the boundary could not be
+        # recognised again next cycle.
+        keep = ordered[:len(wave) + 1] if boundary_found else ordered
+        self._wave_cache = keep[:LIVE_WAVE_MAX_PAYOUTS]
+        return wave, True, pages_read, boundary_found
 
     def _tally_session(self, wave):
         """Add payouts not yet counted to the running session total.
@@ -780,8 +815,12 @@ class LiveMonitorWorker(BaseWorker):
         return emitted
 
     def process_active_cycle(self):
-        current_min_amount, _, wave_gap_mins = self.settings.snapshot()
-        wave, ok = self._fetch_wave(wave_gap_mins)
+        settings = self.settings.snapshot()
+        current_min_amount = settings.min_amount
+        wave_gap_mins = settings.wave_gap_mins
+        wave, ok, pages_read, boundary_found = self._fetch_wave(
+            wave_gap_mins, settings.scan_pages
+        )
         if not ok:
             return
 
@@ -795,11 +834,17 @@ class LiveMonitorWorker(BaseWorker):
         )
         # Say what was seen and what the filter did with it, so an empty
         # table is always explained rather than just being empty.
+        if boundary_found:
+            depth = f"whole wave covered in {pages_read} page(s)"
+        else:
+            depth = (f"stopped at the {settings.scan_pages}-page scan depth; "
+                     f"the wave may run deeper - raise Scan Depth or lower "
+                     f"Wave Gap")
         self.log_message.emit(
             f"Checked {len(wave)} payouts in the current wave: {new_count} new, "
             f"{at_threshold} at/above {current_min_amount:,.2f} Pi, "
             f"{emitted} added to the table. "
-            f"{self.session_payout_count} payouts this session."
+            f"{self.session_payout_count} payouts this session. ({depth})"
         )
 
         if wave:
@@ -1098,6 +1143,17 @@ class PiScannerUI(QMainWindow):
         )
         row1.addWidget(self.val_wave_gap)
 
+        row1.addWidget(QLabel("Scan Depth (pages):"))
+        self.val_scan_pages = QSpinBox()
+        self.val_scan_pages.setRange(1, 1000)
+        self.val_scan_pages.setValue(LIVE_SCAN_PAGES)
+        self.val_scan_pages.setToolTip(
+            "How far back the live scan may read to find the end of the wave.\n"
+            "Each page is 100 operations. Scanning stops as soon as the wave\n"
+            "ends, so this only bites on a wallet that never pauses."
+        )
+        row1.addWidget(self.val_scan_pages)
+
         row1.addWidget(QLabel("Alert Threshold:"))
         self.val_alert_thresh = QDoubleSpinBox()
         self.val_alert_thresh.setDecimals(4)
@@ -1111,9 +1167,11 @@ class PiScannerUI(QMainWindow):
         self.live_settings.set_min_amount(self.val_amount.value())
         self.live_settings.set_ping_interval(self.val_ping.value())
         self.live_settings.set_wave_gap_mins(self.val_wave_gap.value())
+        self.live_settings.set_scan_pages(self.val_scan_pages.value())
         self.val_amount.valueChanged.connect(self.live_settings.set_min_amount)
         self.val_ping.valueChanged.connect(self.live_settings.set_ping_interval)
         self.val_wave_gap.valueChanged.connect(self.live_settings.set_wave_gap_mins)
+        self.val_scan_pages.valueChanged.connect(self.live_settings.set_scan_pages)
 
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("<b>Migration Status:</b>"))
