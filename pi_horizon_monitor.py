@@ -571,26 +571,22 @@ class HistoricalWorker(BaseWorker):
 class LiveMonitorWorker(BaseWorker):
     record_found = pyqtSignal(dict)
     log_message = pyqtSignal(str)
-    # active, last_tx_time, session_top_sum, session_top_wallet, wave_start,
+    # active, last_tx_time, largest_payout, largest_payout_target, wave_start,
     # wave_vol, session_vol
     status_update = pyqtSignal(bool, str, float, str, str, float, float)
-    # [(recipient, session_total, payout_count)] biggest first, session volume,
-    # then the count and volume of payouts with no readable recipient
-    recipient_totals = pyqtSignal(list, float, int, float)
     last_ping = pyqtSignal(str)
-
-    MAX_RANKED_RECIPIENTS = 500
 
     def __init__(self, wallet, settings, parent=None):
         super().__init__(parent)
         self.wallet = wallet.strip()
         self.settings = settings
         self.emitted_ids = BoundedIdSet()   # already listed in the table
-        self.counted_ids = BoundedIdSet()   # already added to the session totals
+        self.counted_ids = BoundedIdSet()   # already added to the session total
         self.session_total_vol = 0.0
-        self.unidentified_vol = 0.0
-        self.unidentified_count = 0
-        self._recipient_totals = {}
+        self.session_payout_count = 0
+        # Largest single payout this session, as (amount, target).
+        self.largest_payout = 0.0
+        self.largest_target = ""
         self._force_ping = threading.Event()
         self._first_cycle = True
 
@@ -643,13 +639,20 @@ class LiveMonitorWorker(BaseWorker):
         return wave, True
 
     def _tally_session(self, wave):
-        """Add payouts not yet counted to the running session totals.
+        """Add payouts not yet counted to the running session total.
 
         Every payout counts here whatever its size. The session figures
         describe what the wallet actually paid out; the Min Amount setting
         only decides what is worth listing individually, and gating the
-        totals behind it left them reading zero whenever a wallet pays out
-        in many small operations.
+        total behind it left it reading zero whenever a wallet pays out in
+        many small operations.
+
+        Payouts are deliberately NOT summed per destination. Most of this
+        wallet's payouts are claimable balances, whose funds sit in their
+        own ledger entry until claimed rather than landing in the named
+        account, and the same claimant is named on nearly all of them. A
+        per-wallet total therefore says nothing about who ends up with the
+        Pi. The largest single payout is tracked instead.
         """
         new_count = 0
         for payout in wave:
@@ -657,32 +660,12 @@ class LiveMonitorWorker(BaseWorker):
                 continue
             self.counted_ids.add(payout["id"])
             new_count += 1
+            self.session_payout_count += 1
             self.session_total_vol += payout["raw_amount"]
-            if not payout.get("target_known", True):
-                # Counts toward volume, but has no recipient to attribute it
-                # to, so it must not distort the per-recipient ranking.
-                self.unidentified_vol += payout["raw_amount"]
-                self.unidentified_count += 1
-                continue
-            entry = self._recipient_totals.setdefault(
-                payout["target"], {"total": 0.0, "count": 0}
-            )
-            entry["total"] += payout["raw_amount"]
-            entry["count"] += 1
+            if payout["raw_amount"] > self.largest_payout:
+                self.largest_payout = payout["raw_amount"]
+                self.largest_target = payout["target"]
         return new_count
-
-    def _session_peak(self):
-        """Largest per-recipient total seen this session.
-
-        Accumulated across the whole session rather than recomputed from the
-        current wave, so the headline figure never falls back when a new
-        wave starts.
-        """
-        top_wallet, top_total = "", 0.0
-        for target, entry in self._recipient_totals.items():
-            if entry["total"] > top_total:
-                top_wallet, top_total = target, entry["total"]
-        return top_wallet, top_total
 
     def _emit_new_records(self, wave, min_amount):
         """List payouts at or above the threshold, oldest first."""
@@ -705,20 +688,6 @@ class LiveMonitorWorker(BaseWorker):
             )
         return emitted
 
-    def _emit_recipient_totals(self):
-        ranked = sorted(
-            ((target, entry["total"], entry["count"])
-             for target, entry in self._recipient_totals.items()),
-            key=lambda row: row[1],
-            reverse=True,
-        )
-        self.recipient_totals.emit(
-            ranked[:self.MAX_RANKED_RECIPIENTS],
-            self.session_total_vol,
-            self.unidentified_count,
-            self.unidentified_vol,
-        )
-
     def process_active_cycle(self):
         current_min_amount, _, wave_gap_mins = self.settings.snapshot()
         wave, ok = self._fetch_wave(wave_gap_mins)
@@ -739,14 +708,9 @@ class LiveMonitorWorker(BaseWorker):
             f"Checked {len(wave)} payouts in the current wave: {new_count} new, "
             f"{at_threshold} at/above {current_min_amount:,.2f} Pi, "
             f"{emitted} added to the table. "
-            f"{len(self._recipient_totals)} distinct recipients this session"
-            + (f", {self.unidentified_count} payouts with no readable recipient"
-               if self.unidentified_count else "") + "."
+            f"{self.session_payout_count} payouts this session."
         )
 
-        self._emit_recipient_totals()
-
-        top_wallet, top_total = self._session_peak()
         if wave:
             latest_tx_dt = wave[0]["dt"]
             idle_minutes = (
@@ -761,8 +725,8 @@ class LiveMonitorWorker(BaseWorker):
         self.status_update.emit(
             is_active,
             last_time,
-            top_total,
-            top_wallet,
+            self.largest_payout,
+            self.largest_target,
             wave_start,
             wave_vol,
             self.session_total_vol,
@@ -895,10 +859,6 @@ class PiScannerUI(QMainWindow):
         super().__init__()
         self.hist_data = []
         self.live_data = []
-        self.session_ranked = []
-        self.session_vol = 0.0
-        self.unidentified_count = 0
-        self.unidentified_vol = 0.0
         self.current_pi_price = 0.0
         self.hist_worker = None
         self.live_worker = None
@@ -1002,7 +962,7 @@ class PiScannerUI(QMainWindow):
         self.lbl_cycle_vol.setStyleSheet("color: #2c3e50; font-weight: bold;")
         row2.addWidget(self.lbl_cycle_vol)
 
-        row2.addWidget(QLabel("<b>Highest Account Total (Session):</b>"))
+        row2.addWidget(QLabel("<b>Largest Single Payout:</b>"))
         self.max_payout_label = QLabel("AWAITING DATA...")
         self.max_payout_label.setStyleSheet("color: gray; font-weight: bold;")
         row2.addWidget(self.max_payout_label)
@@ -1048,7 +1008,6 @@ class PiScannerUI(QMainWindow):
 
         # Connected once the live tab exists, so moving the threshold
         # re-filters the session totals straight away.
-        self.val_amount.valueChanged.connect(self.render_recipient_totals)
 
     def init_threads(self):
         self.price_worker = PiPriceWorker()
@@ -1098,20 +1057,7 @@ class PiScannerUI(QMainWindow):
 
         layout.addWidget(QLabel("Individual payouts at or above Min Amount:"))
         self.table_live = self.create_tx_table()
-        layout.addWidget(self.table_live, 3)
-
-        self.lbl_totals_header = QLabel(
-            "Recipient totals this session at or above Min Amount:"
-        )
-        layout.addWidget(self.lbl_totals_header)
-        self.table_live_totals = QTableWidget(0, 4)
-        self.table_live_totals.setHorizontalHeaderLabels([
-            "Recipient", "Session Total (Pi & USD)", "Payouts", "% of Session"
-        ])
-        self.table_live_totals.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        layout.addWidget(self.table_live_totals, 2)
+        layout.addWidget(self.table_live)
 
         self.log_live = self.create_log_box(100)
         layout.addWidget(QLabel("Live Logs:"))
@@ -1291,12 +1237,7 @@ class PiScannerUI(QMainWindow):
             return
 
         self.table_live.setRowCount(0)
-        self.table_live_totals.setRowCount(0)
         self.live_data.clear()
-        self.session_ranked = []
-        self.session_vol = 0.0
-        self.unidentified_count = 0
-        self.unidentified_vol = 0.0
         self.btn_live_start.setEnabled(False)
         self.btn_live_stop.setEnabled(True)
         self.btn_force_ping.setEnabled(True)
@@ -1313,7 +1254,6 @@ class PiScannerUI(QMainWindow):
         )
         self.live_worker.log_message.connect(self.log_live.append)
         self.live_worker.status_update.connect(self.update_status_ui)
-        self.live_worker.recipient_totals.connect(self.update_recipient_totals)
         self.live_worker.last_ping.connect(self.update_last_ping)
         self.live_worker.start()
 
@@ -1343,15 +1283,14 @@ class PiScannerUI(QMainWindow):
         self.lbl_wave_vol.setText(f"{wave_vol:,.2f} Pi{fiat_wave}")
         self.lbl_cycle_vol.setText(f"{session_vol:,.2f} Pi{fiat_tot}")
 
-        # A zero peak alongside a non-zero session volume means nothing could
-        # be attributed to a recipient. Say so rather than showing a bare N/A.
-        no_peak = "N/A"
-        if max_amt <= 0 and self.unidentified_count:
-            no_peak = (f"N/A - {self.unidentified_count} payouts "
-                       f"({self.unidentified_vol:,.2f} Pi) have no readable "
-                       f"recipient")
+        # max_amt is the largest single payout this session, not a per-wallet
+        # total: a claimable balance's Pi sits in its own ledger entry until
+        # claimed, so summing by destination would not describe who holds it.
         target_display = f"{max_target[:8]}..." if max_target else "N/A"
-        self.max_payout_label.setToolTip(max_target or "No payouts seen yet")
+        self.max_payout_label.setToolTip(
+            f"Claimant / destination: {max_target}" if max_target
+            else "No payouts seen yet"
+        )
 
         if active:
             self.status_label.setText(f"ACTIVE (Last Tx: {last_time})")
@@ -1369,73 +1308,18 @@ class PiScannerUI(QMainWindow):
                 "background-color: darkred; color: white; padding: 5px; "
                 "font-weight: bold; border-radius: 4px;"
             )
-            # The session peak stands whether or not a wave is running; it is
-            # cumulative, so it must not be relabelled or cleared here.
+            # The session maximum stands whether or not a wave is running; it
+            # is cumulative, so it must not be relabelled or cleared here.
             if max_amt > 0:
                 self.max_payout_label.setText(
                     f"{max_amt:,.2f} Pi{fiat_max} -> {target_display}"
                 )
             else:
-                self.max_payout_label.setText(no_peak)
+                self.max_payout_label.setText("N/A")
             self.max_payout_label.setStyleSheet("color: gray; font-weight: bold;")
 
     def update_last_ping(self, time_str):
         self.lbl_last_ping.setText(f"<b>Last API Read:</b> {time_str}")
-
-    def update_recipient_totals(self, ranked, session_vol,
-                                unidentified_count=0, unidentified_vol=0.0):
-        self.session_ranked = ranked
-        self.session_vol = session_vol
-        self.unidentified_count = unidentified_count
-        self.unidentified_vol = unidentified_vol
-        self.render_recipient_totals()
-
-    def render_recipient_totals(self, _value=None):
-        """Redraw the session totals against the current Min Amount.
-
-        Takes an ignored argument so it can be connected directly to the
-        spin box's valueChanged signal.
-
-        Driven off the stored ranking rather than the worker, so moving the
-        threshold re-filters immediately instead of waiting for the next ping.
-        """
-        threshold = self.val_amount.value()
-        rows = [row for row in self.session_ranked if row[1] >= threshold]
-
-        self.table_live_totals.setRowCount(0)
-        for target, total, count in rows:
-            row = self.table_live_totals.rowCount()
-            self.table_live_totals.insertRow(row)
-
-            fiat = (f" (${total * self.current_pi_price:,.2f})"
-                    if self.current_pi_price > 0 else "")
-            share = (total / self.session_vol * 100.0) if self.session_vol > 0 else 0.0
-
-            target_item = QTableWidgetItem(target)
-            target_item.setToolTip(target)
-            self.table_live_totals.setItem(row, 0, target_item)
-            self.table_live_totals.setItem(
-                row, 1, QTableWidgetItem(f"{total:,.2f} Pi{fiat}")
-            )
-            self.table_live_totals.setItem(row, 2, QTableWidgetItem(str(count)))
-            self.table_live_totals.setItem(row, 3, QTableWidgetItem(f"{share:.1f}%"))
-
-        matched_vol = sum(row[1] for row in rows)
-        matched_fiat = (f" (${matched_vol * self.current_pi_price:,.2f})"
-                        if self.current_pi_price > 0 else "")
-        unreadable = ""
-        if self.unidentified_count:
-            unreadable = (
-                f" &nbsp; <span style='color:#c0392b;'>"
-                f"{self.unidentified_count} payouts "
-                f"({self.unidentified_vol:,.2f} Pi) have no readable recipient "
-                f"and cannot be attributed</span>"
-            )
-        self.lbl_totals_header.setText(
-            f"Recipient totals this session at or above {threshold:,.2f} Pi: "
-            f"<b>{len(rows)}</b> of {len(self.session_ranked)} recipients, "
-            f"<b>{matched_vol:,.2f} Pi{matched_fiat}</b>{unreadable}"
-        )
 
     # --- ANALYTICS ACTIONS ---
     def start_analytics(self):
