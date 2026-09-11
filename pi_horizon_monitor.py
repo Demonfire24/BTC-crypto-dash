@@ -1124,6 +1124,7 @@ class PiScannerUI(QMainWindow):
         self.hist_data = []
         self.live_data = []
         self.claimable_data = []
+        self.claimable_stats = None
         self.current_pi_price = 0.0
         self.hist_worker = None
         self.live_worker = None
@@ -1309,8 +1310,56 @@ class PiScannerUI(QMainWindow):
         self.ledger_worker.start()
 
     def update_price_ui(self, price_float, price_str):
+        changed = price_float != self.current_pi_price
         self.current_pi_price = price_float
         self.lbl_price.setText(f"<b>Live PI Price:</b> {price_str}")
+        # Rows listed before the first price arrived would otherwise stay
+        # without a USD figure for the life of the session.
+        if changed:
+            self.refresh_fiat_cells()
+
+    def amount_with_fiat(self, raw_amount, pi_text):
+        """`pi_text` already carries its own formatting and unit."""
+        if self.current_pi_price > 0:
+            return f"{pi_text} (${raw_amount * self.current_pi_price:,.2f})"
+        return pi_text
+
+    def set_amount_cell(self, table, row, column, raw_amount, pi_text):
+        """Write an amount cell that remembers what it is showing.
+
+        Storing the value alongside the text lets the USD figure be
+        recomputed in place when the price moves, without re-reading the API
+        or keeping a parallel copy of every table.
+        """
+        cell = QTableWidgetItem(self.amount_with_fiat(raw_amount, pi_text))
+        cell.setData(Qt.ItemDataRole.UserRole, (raw_amount, pi_text))
+        table.setItem(row, column, cell)
+
+    def fiat_cells(self):
+        """Every (table, column) holding a Pi amount that carries USD."""
+        return (
+            (getattr(self, "table_live", None), 2),
+            (getattr(self, "table_hist", None), 2),
+            (getattr(self, "table_claimable", None), 0),
+            (getattr(self, "table_analytics", None), 5),
+        )
+
+    def refresh_fiat_cells(self):
+        """Re-render every amount cell against the current price."""
+        for table, column in self.fiat_cells():
+            if table is None:
+                continue
+            for row in range(table.rowCount()):
+                cell = table.item(row, column)
+                if cell is None:
+                    continue
+                stored = cell.data(Qt.ItemDataRole.UserRole)
+                if not stored:
+                    continue
+                raw_amount, pi_text = stored
+                cell.setText(self.amount_with_fiat(raw_amount, pi_text))
+        if self.claimable_stats:
+            self.show_claimable_summary(self.claimable_stats)
 
     def update_ledger_ui(self, info):
         seq = info.get("sequence")
@@ -1476,7 +1525,8 @@ class PiScannerUI(QMainWindow):
     def create_tx_table(self):
         table = QTableWidget(0, 5)
         table.setHorizontalHeaderLabels(
-            ["Timestamp (UTC)", "Type", "Amount (Pi)", "Recipient", "Tx Hash"]
+            ["Timestamp (UTC)", "Type", "Amount (Pi & USD)", "Recipient",
+             "Tx Hash"]
         )
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         return table
@@ -1518,7 +1568,8 @@ class PiScannerUI(QMainWindow):
 
         table.setItem(row, 0, QTableWidgetItem(item["time"]))
         table.setItem(row, 1, QTableWidgetItem(item["type"]))
-        table.setItem(row, 2, QTableWidgetItem(item["amount"]))
+        self.set_amount_cell(table, row, 2, item["raw_amount"],
+                             f"{item['amount']} Pi")
         table.setItem(row, 3, target_item)
         table.setItem(row, 4, hash_item)
 
@@ -1708,6 +1759,7 @@ class PiScannerUI(QMainWindow):
 
         self.table_claimable.setRowCount(0)
         self.claimable_data.clear()
+        self.claimable_stats = None
         self.btn_claimable_start.setEnabled(False)
         self.log_claimable.clear()
         self.progress_claimable.setValue(0)
@@ -1735,8 +1787,6 @@ class PiScannerUI(QMainWindow):
             return
         self.table_claimable.insertRow(row)
 
-        fiat = (f" (${item['raw_amount'] * self.current_pi_price:,.2f})"
-                if self.current_pi_price > 0 else "")
         claimant_item = QTableWidgetItem(item["claimant"])
         claimant_item.setToolTip(item["claimant"])
         id_item = QTableWidgetItem(
@@ -1746,15 +1796,15 @@ class PiScannerUI(QMainWindow):
         status_item = QTableWidgetItem(item["status"])
         status_item.setToolTip(f"Created {item['created_text']} UTC")
 
-        self.table_claimable.setItem(
-            row, 0, QTableWidgetItem(f"{item['amount']} Pi{fiat}")
-        )
+        self.set_amount_cell(self.table_claimable, row, 0,
+                             item["raw_amount"], f"{item['amount']} Pi")
         self.table_claimable.setItem(row, 1, claimant_item)
         self.table_claimable.setItem(row, 2, QTableWidgetItem(item["deadline_text"]))
         self.table_claimable.setItem(row, 3, status_item)
         self.table_claimable.setItem(row, 4, id_item)
 
     def show_claimable_summary(self, stats):
+        self.claimable_stats = stats
         total = stats["total"]
         fiat = (f" (${total * self.current_pi_price:,.2f})"
                 if self.current_pi_price > 0 else "")
@@ -1824,10 +1874,6 @@ class PiScannerUI(QMainWindow):
             end_str = cycle["end"].strftime("%Y-%m-%d %H:%M")
             duration_hrs = (cycle["end"] - cycle["start"]).total_seconds() / 3600.0
 
-            vol_pi = cycle["volume"]
-            vol_usd = vol_pi * self.current_pi_price if self.current_pi_price > 0 else 0.0
-            vol_str = f"{vol_pi:,.0f} Pi" + (f" (${vol_usd:,.2f})" if vol_usd > 0 else "")
-
             self.table_analytics.setItem(row, 0, QTableWidgetItem(start_str))
             self.table_analytics.setItem(row, 1, QTableWidgetItem(end_str))
             self.table_analytics.setItem(row, 2, QTableWidgetItem(f"{duration_hrs:.2f}"))
@@ -1835,7 +1881,8 @@ class PiScannerUI(QMainWindow):
                 row, 3, QTableWidgetItem(f"{cycle['gap_from_prev_hrs']:.2f}")
             )
             self.table_analytics.setItem(row, 4, QTableWidgetItem(str(cycle["count"])))
-            self.table_analytics.setItem(row, 5, QTableWidgetItem(vol_str))
+            self.set_amount_cell(self.table_analytics, row, 5,
+                                 cycle["volume"], f"{cycle['volume']:,.0f} Pi")
 
     def closeEvent(self, event):
         for worker in (self.price_worker, self.ledger_worker, self.live_worker,
