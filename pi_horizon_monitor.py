@@ -102,7 +102,10 @@ HORIZON_PAGE_LIMIT = 100
 # The live scan reads back until the wave ends rather than to a fixed depth;
 # this is only the runaway stop, and the user can change it.
 LIVE_SCAN_PAGES = 50
-LIVE_WAVE_MAX_PAYOUTS = 50000
+# 500,000 operations. Each parsed payout costs roughly 550 bytes, so the
+# ceiling is about 270 MB of held payouts at full depth.
+MAX_SCAN_PAGES = 5000
+SCAN_PROGRESS_EVERY = 25    # log lines so a long scan does not look stalled
 HISTORICAL_MAX_PAGES = 100
 ANALYTICS_MAX_PAGES = 50
 CLAIMABLE_MAX_PAGES = 50
@@ -110,7 +113,12 @@ CLAIMABLE_MAX_PAGES = 50
 MAX_TABLE_ROWS = 2000       # keeps a multi-day live session from growing forever
 MAX_LOG_LINES = 500
 # Payouts kept so the table can be rebuilt when the filter changes.
-SESSION_PAYOUT_HISTORY = 20000
+SESSION_PAYOUT_HISTORY = 100000
+# A deep scan is thousands of sequential requests, so rate limiting is
+# expected rather than exceptional.
+HORIZON_RETRY_LIMIT = 4
+HORIZON_RETRY_BACKOFF = 2.0
+HORIZON_RETRY_MAX_WAIT = 30.0
 # A spin box fires on every keystroke; wait for the typing to settle.
 REFILTER_DEBOUNCE_MS = 600
 MAX_TRACKED_IDS = 20000
@@ -497,8 +505,40 @@ class BaseWorker(QThread):
         print(f"{type(self).__name__} failed: {type(exc).__name__}: {exc}",
               file=sys.stderr)
 
+    def report_rate_limit(self, wait_seconds, attempt):
+        """Overridden by workers that own a log signal."""
+
+    @staticmethod
+    def _retry_delay(response, attempt):
+        after = getattr(response, "headers", {}) or {}
+        if after.get("Retry-After"):
+            try:
+                return max(1.0, min(float(after["Retry-After"]),
+                                    HORIZON_RETRY_MAX_WAIT))
+            except (TypeError, ValueError):
+                pass
+        return min(HORIZON_RETRY_BACKOFF * (2 ** attempt), HORIZON_RETRY_MAX_WAIT)
+
+    def get_page(self, url):
+        """Fetch one page, waiting out rate limiting rather than failing.
+
+        A deep scan issues thousands of sequential requests, so hitting the
+        limit is routine; abandoning the scan over one would discard every
+        page already read.
+        """
+        response = self.session.get(url, timeout=REQUEST_TIMEOUT)
+        for attempt in range(HORIZON_RETRY_LIMIT):
+            if response.status_code != 429 or self.stopping:
+                return response
+            wait = self._retry_delay(response, attempt)
+            self.report_rate_limit(wait, attempt + 1)
+            if not self.sleep_interruptible(wait):
+                return response
+            response = self.session.get(url, timeout=REQUEST_TIMEOUT)
+        return response
+
     def iter_pages(self, url, max_pages):
-        """Yield (page_number, records) for a Horizon operations feed.
+        """Yield (page_number, records) for a Horizon collection.
 
         Network/JSON errors propagate to the caller so each worker can report
         them in its own log.
@@ -508,7 +548,7 @@ class BaseWorker(QThread):
         while url and page < max_pages and not self.stopping:
             page += 1
             visited.add(url)
-            response = self.session.get(url, timeout=REQUEST_TIMEOUT)
+            response = self.get_page(url)
             response.raise_for_status()
             data = response.json()
             records = data.get("_embedded", {}).get("records", [])
@@ -724,6 +764,12 @@ class LiveMonitorWorker(BaseWorker):
     def report_unexpected(self, exc):
         self.log_message.emit(f"Monitor stopped: {type(exc).__name__}: {exc}")
 
+    def report_rate_limit(self, wait_seconds, attempt):
+        self.log_message.emit(
+            f"Rate limited by the API; waiting {wait_seconds:.0f}s "
+            f"(attempt {attempt} of {HORIZON_RETRY_LIMIT})..."
+        )
+
     def work(self):
         self.log_message.emit("Monitoring live payouts...")
         while not self.stopping:
@@ -752,6 +798,7 @@ class LiveMonitorWorker(BaseWorker):
         ordered = sorted(pool.values(), key=lambda p: p["dt"], reverse=True)
         wave, boundary_found = wave_slice(ordered, wave_gap_mins)
         pages_read = 0
+        failure = None
 
         try:
             for page, records in self.iter_pages(
@@ -769,17 +816,42 @@ class LiveMonitorWorker(BaseWorker):
                 wave, boundary_found = wave_slice(ordered, wave_gap_mins)
                 if boundary_found:
                     break
+                if page % SCAN_PROGRESS_EVERY == 0:
+                    self.log_message.emit(
+                        f"Scanning: {page} of up to {scan_pages} pages, "
+                        f"{len(ordered):,} payouts so far, still looking for a "
+                        f"{wave_gap_mins} minute gap..."
+                    )
         except (requests.RequestException, ValueError) as exc:
-            self.last_ping.emit(f"{utc_stamp()} (Error)")
-            self.log_message.emit(f"API Read Error: {exc}")
-            return [], False, pages_read, False
+            failure = exc
 
         # Keep the wave plus the one payout beyond it: without that sentinel
         # the cached wave has no internal gap and the boundary could not be
-        # recognised again next cycle.
+        # recognised again next cycle. Committed even when the read failed --
+        # a deep scan is thousands of pages of work and must not be discarded
+        # over one bad response.
         keep = ordered[:len(wave) + 1] if boundary_found else ordered
-        self._wave_cache = keep[:LIVE_WAVE_MAX_PAYOUTS]
+        self._wave_cache = keep[:self._cache_limit(scan_pages)]
+
+        if failure is not None:
+            self.last_ping.emit(f"{utc_stamp()} (Error)")
+            self.log_message.emit(
+                f"API Read Error after {pages_read} page(s): {failure}. "
+                f"{len(self._wave_cache):,} payouts kept; the next check "
+                f"resumes from there."
+            )
+            return [], False, pages_read, False
+
         return wave, True, pages_read, boundary_found
+
+    @staticmethod
+    def _cache_limit(scan_pages):
+        """Hold everything the chosen depth can fetch.
+
+        A fixed ceiling here would silently cap the wave below the depth the
+        user asked for, which is what limited it to 500 pages before.
+        """
+        return min(max(int(scan_pages), 1), MAX_SCAN_PAGES) * HORIZON_PAGE_LIMIT
 
     def _tally_session(self, wave):
         """Add payouts not yet counted to the running session total.
@@ -1195,12 +1267,18 @@ class PiScannerUI(QMainWindow):
 
         row1.addWidget(QLabel("Scan Depth (pages):"))
         self.val_scan_pages = QSpinBox()
-        self.val_scan_pages.setRange(1, 1000)
+        self.val_scan_pages.setRange(1, MAX_SCAN_PAGES)
         self.val_scan_pages.setValue(LIVE_SCAN_PAGES)
+        self.val_scan_pages.setGroupSeparatorShown(True)
         self.val_scan_pages.setToolTip(
             "How far back the live scan may read to find the end of the wave.\n"
-            "Each page is 100 operations. Scanning stops as soon as the wave\n"
-            "ends, so this only bites on a wallet that never pauses."
+            f"Each page is {HORIZON_PAGE_LIMIT} operations, so the maximum of "
+            f"{MAX_SCAN_PAGES:,} pages is\n"
+            f"{MAX_SCAN_PAGES * HORIZON_PAGE_LIMIT:,} operations.\n\n"
+            "Scanning stops as soon as the wave ends, so this only bites on a\n"
+            "wallet that never pauses. At full depth expect a first scan\n"
+            "lasting many minutes and a few hundred MB of memory; later checks\n"
+            "confirm an unchanged wave from a single page."
         )
         row1.addWidget(self.val_scan_pages)
 
